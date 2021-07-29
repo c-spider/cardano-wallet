@@ -1,12 +1,9 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -27,14 +24,16 @@ module Cardano.Wallet.DB.Sqlite.Types where
 
 import Prelude
 
-import Cardano.Address.Script ( Cosigner, Script, ScriptHash (..) )
+import Cardano.Address.Script
+    ( Cosigner, Script, ScriptHash (..) )
 import Cardano.Api
     ( TxMetadataJsonSchema (..)
     , displayError
     , metadataFromJson
     , metadataToJson
     )
-import Cardano.Slotting.Slot ( SlotNo (..) )
+import Cardano.Slotting.Slot
+    ( SlotNo (..) )
 import Cardano.Wallet.Primitive.AddressDerivation
     ( Passphrase (..), PassphraseScheme (..), Role (..) )
 import Cardano.Wallet.Primitive.AddressDiscovery.Sequential
@@ -43,7 +42,8 @@ import Cardano.Wallet.Primitive.AddressDiscovery.Sequential
     , getAddressPoolGap
     , mkAddressPoolGap
     )
-import Cardano.Wallet.Primitive.AddressDiscovery.Shared ( CredentialType )
+import Cardano.Wallet.Primitive.AddressDiscovery.Shared
+    ( CredentialType )
 import Cardano.Wallet.Primitive.Types
     ( EpochNo (..)
     , FeePolicy
@@ -61,11 +61,16 @@ import Cardano.Wallet.Primitive.Types
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..), AddressState (..) )
-import Cardano.Wallet.Primitive.Types.Coin ( Coin (..), isValidCoin )
-import Cardano.Wallet.Primitive.Types.Hash ( Hash (..) )
-import Cardano.Wallet.Primitive.Types.RewardAccount ( RewardAccount (..) )
-import Cardano.Wallet.Primitive.Types.TokenPolicy ( TokenName, TokenPolicyId )
-import Cardano.Wallet.Primitive.Types.TokenQuantity ( TokenQuantity (..) )
+import Cardano.Wallet.Primitive.Types.Coin
+    ( Coin (..), isValidCoin )
+import Cardano.Wallet.Primitive.Types.Hash
+    ( Hash (..) )
+import Cardano.Wallet.Primitive.Types.RewardAccount
+    ( RewardAccount (..) )
+import Cardano.Wallet.Primitive.Types.TokenPolicy
+    ( TokenName, TokenPolicyId )
+import Cardano.Wallet.Primitive.Types.TokenQuantity
+    ( TokenQuantity (..) )
 import Cardano.Wallet.Primitive.Types.Tx
     ( Direction (..)
     , SealedTx (..)
@@ -73,17 +78,28 @@ import Cardano.Wallet.Primitive.Types.Tx
     , TxStatus (..)
     , sealedTxFromBytes
     )
-import Control.Arrow ( left )
-import Control.Monad ( (<=<), (>=>) )
-import Data.Aeson ( FromJSON (..), ToJSON (..), Value (..), withText )
-import Data.Aeson.Types ( Parser )
-import Data.Bifunctor ( bimap, first )
-import Data.ByteArray.Encoding ( Base (..), convertFromBase, convertToBase )
-import Data.ByteString ( ByteString )
-import Data.Maybe ( mapMaybe )
-import Data.Proxy ( Proxy (..) )
-import Data.Quantity ( Percentage )
-import Data.Text ( Text )
+import Control.Arrow
+    ( left )
+import Control.Monad
+    ( (<=<), (>=>) )
+import Data.Aeson
+    ( FromJSON (..), ToJSON (..), Value (..), withText )
+import Data.Aeson.Types
+    ( Parser )
+import Data.Bifunctor
+    ( bimap, first )
+import Data.ByteArray.Encoding
+    ( Base (..), convertFromBase, convertToBase )
+import Data.ByteString
+    ( ByteString )
+import Data.Maybe
+    ( mapMaybe )
+import Data.Proxy
+    ( Proxy (..) )
+import Data.Quantity
+    ( Percentage )
+import Data.Text
+    ( Text )
 import Data.Text.Class
     ( FromText (..)
     , TextDecodingError (..)
@@ -91,23 +107,34 @@ import Data.Text.Class
     , fromTextMaybe
     , getTextDecodingError
     )
-import Data.Text.Encoding ( decodeUtf8, encodeUtf8 )
+import Data.Text.Encoding
+    ( decodeUtf8, encodeUtf8 )
 import Data.Time.Clock.POSIX
     ( POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds )
 import Data.Time.Format
     ( defaultTimeLocale, formatTime, iso8601DateFormat, parseTimeM )
-import Data.Word ( Word32, Word64 )
-import Data.Word.Odd ( Word31 )
+import Data.Word
+    ( Word32, Word64 )
+import Data.Word.Odd
+    ( Word31 )
 import Database.Persist.Sqlite
     ( PersistField (..), PersistFieldSql (..), PersistValue (..) )
-import Database.Persist.TH ( MkPersistSettings (..), sqlSettings )
-import GHC.Generics ( Generic )
-import Network.URI ( parseAbsoluteURI )
-import System.Random.Internal ( StdGen (..) )
-import System.Random.SplitMix ( seedSMGen, unseedSMGen )
-import Text.Read ( readMaybe )
-import Web.HttpApiData ( FromHttpApiData (..), ToHttpApiData (..) )
-import Web.PathPieces ( PathPiece (..) )
+import Database.Persist.TH
+    ( MkPersistSettings (..), sqlSettings )
+import GHC.Generics
+    ( Generic )
+import Network.URI
+    ( parseAbsoluteURI )
+import System.Random.Internal
+    ( StdGen (..) )
+import System.Random.SplitMix
+    ( seedSMGen, unseedSMGen )
+import Text.Read
+    ( readMaybe )
+import Web.HttpApiData
+    ( FromHttpApiData (..), ToHttpApiData (..) )
+import Web.PathPieces
+    ( PathPiece (..) )
 
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BL

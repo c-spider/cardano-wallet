@@ -99,6 +99,7 @@ module Cardano.Wallet.Primitive.CoinSelection.Balance
     , mapMaybe
     , balanceMissing
     , missingOutputAssets
+    , inputFromSelection
     ) where
 
 import Prelude
@@ -269,6 +270,10 @@ data SelectionResult change = SelectionResult
         -- the selection.
     }
     deriving (Generic, Eq, Show)
+
+-- | Make a transaction input resolver from the coin selection.
+inputFromSelection :: SelectionResult change -> TxIn -> Maybe TxOut
+inputFromSelection cs = flip lookup $ NE.toList $ view #inputsSelected cs
 
 -- | Calculate the actual difference between the total outputs (incl. change)
 -- and total inputs of a particular selection. By construction, this should be

@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -38,10 +39,13 @@ module Cardano.Wallet.Primitive.Types.Tx
     , sealedTxFromBytes
     , sealedTxFromBytes'
     , sealedTxFromCardano
+    , sealedTxFromCardano'
     , getSerialisedTxParts
     , unsafeSealedTxFromBytes
     , SerialisedTx (..)
     , SerialisedTxParts (..)
+    , getSealedTxBody
+    , getSealedTxWitnesses
 
     -- * Functions
     , fromTransactionInfo
@@ -103,7 +107,7 @@ import Cardano.Wallet.Primitive.Types.TokenPolicy
 import Cardano.Wallet.Primitive.Types.TokenQuantity
     ( TokenQuantity (..) )
 import Control.DeepSeq
-    ( NFData (..) )
+    ( NFData (..), deepseq )
 import Data.Bifunctor
     ( first )
 import Data.ByteArray
@@ -113,7 +117,7 @@ import Data.ByteString
 import Data.Either
     ( partitionEithers )
 import Data.Function
-    ( (&) )
+    ( on, (&) )
 import Data.Generics.Internal.VL.Lens
     ( view )
 import Data.Generics.Labels
@@ -453,7 +457,17 @@ instance Eq SealedTx where
             Nothing -> False
 
 instance NFData SealedTx where
-    rnf = rnf . show  -- fixme: temp fix
+    rnf (SealedTx (InAnyCardanoEra _ tx) bs) = tx' `deepseq` bs `deepseq` ()
+      where
+        tx' = show tx -- should be good enough
+
+getSealedTxBody :: SealedTx -> InAnyCardanoEra Cardano.TxBody
+getSealedTxBody (SealedTx (InAnyCardanoEra era tx) _) =
+    InAnyCardanoEra era (Cardano.getTxBody tx)
+
+getSealedTxWitnesses :: SealedTx -> [InAnyCardanoEra Cardano.KeyWitness]
+getSealedTxWitnesses (SealedTx (InAnyCardanoEra era tx) _) =
+    [InAnyCardanoEra era w | w <- Cardano.getTxWitnesses tx]
 
 -- | Construct a 'SealedTx' from a "Cardano.Api" transaction.
 sealedTxFromCardano :: InAnyCardanoEra Cardano.Tx -> SealedTx
@@ -461,6 +475,10 @@ sealedTxFromCardano tx = SealedTx tx (cardanoTxToBytes tx)
   where
     cardanoTxToBytes :: InAnyCardanoEra Cardano.Tx -> ByteString
     cardanoTxToBytes (InAnyCardanoEra _era tx') = Cardano.serialiseToCBOR tx'
+
+-- | Construct a 'SealedTx' from a "Cardano.Api" transaction.
+sealedTxFromCardano' :: Cardano.IsCardanoEra era => Cardano.Tx era -> SealedTx
+sealedTxFromCardano' = sealedTxFromCardano . InAnyCardanoEra Cardano.cardanoEra
 
 -- | Deserialise a Cardano transaction. The transaction can be in the format of
 -- any era. This function will try the most recent era first, then
@@ -470,32 +488,40 @@ cardanoTxFromBytes
     -> ByteString -- ^ Serialised transaction
     -> Either DecoderError (InAnyCardanoEra Cardano.Tx)
 cardanoTxFromBytes maxEra bs = asum $ map snd $ filter (withinEra maxEra . fst)
-    [ (anyCardanoEra AlonzoEra, InAnyCardanoEra AlonzoEra <$> deserialiseFromCBOR (Cardano.AsTx Cardano.AsAlonzoEra) bs)
-    , (anyCardanoEra MaryEra, InAnyCardanoEra MaryEra <$> deserialiseFromCBOR (Cardano.AsTx Cardano.AsMaryEra) bs)
-    , (anyCardanoEra AllegraEra, InAnyCardanoEra AllegraEra <$> deserialiseFromCBOR (Cardano.AsTx Cardano.AsAllegraEra) bs)
-    , (anyCardanoEra ShelleyEra, InAnyCardanoEra ShelleyEra <$> deserialiseFromCBOR (Cardano.AsTx Cardano.AsShelleyEra) bs)
-    , (anyCardanoEra ByronEra, InAnyCardanoEra ByronEra <$> deserialiseFromCBOR (Cardano.AsTx Cardano.AsByronEra) bs)
+    [ deserialise AlonzoEra  Cardano.AsAlonzoEra
+    , deserialise MaryEra    Cardano.AsMaryEra
+    , deserialise AllegraEra Cardano.AsAllegraEra
+    , deserialise ShelleyEra Cardano.AsShelleyEra
+    , deserialise ByronEra   Cardano.AsByronEra
     ]
   where
+    deserialise
+        :: forall era. Cardano.IsCardanoEra era
+        => CardanoEra era
+        -> Cardano.AsType era
+        -> (AnyCardanoEra, Either DecoderError (InAnyCardanoEra Cardano.Tx))
+    deserialise era asEra =
+        ( anyCardanoEra era
+        , InAnyCardanoEra era <$> deserialiseFromCBOR (Cardano.AsTx asEra) bs
+        )
+
     asum xs = case partitionEithers xs of
         (_, (a:_)) -> Right a
         ((e:_), []) -> Left e
         ([], []) -> error "impossible"
 
+-- | @a `withinEra` b@ is 'True' iff @b@ is the same era as @a@, or an earlier
+-- one.
 withinEra :: AnyCardanoEra -> AnyCardanoEra -> Bool
-withinEra (AnyCardanoEra e1) (AnyCardanoEra e2) = case (e1, e2) of
-    (AlonzoEra , _         ) -> True
-    (MaryEra   , AlonzoEra ) -> False
-    (MaryEra   , _         ) -> True
-    (AllegraEra, AlonzoEra ) -> False
-    (AllegraEra, MaryEra   ) -> False
-    (AllegraEra, _         ) -> True
-    (ShelleyEra, AlonzoEra ) -> False
-    (ShelleyEra, MaryEra   ) -> False
-    (ShelleyEra, AllegraEra) -> False
-    (ShelleyEra, _         ) -> True
-    (ByronEra  , ByronEra  ) -> True
-    (ByronEra  , _         ) -> False
+withinEra = (>=) `on` numberEra
+  where
+    numberEra :: AnyCardanoEra -> Int
+    numberEra (AnyCardanoEra e) = case e of
+        ByronEra   -> 1
+        ShelleyEra -> 2
+        AllegraEra -> 3
+        MaryEra    -> 4
+        AlonzoEra  -> 5
 
 -- | Deserialise a transaction to construct a 'SealedTx'.
 sealedTxFromBytes :: ByteString -> Either DecoderError SealedTx
