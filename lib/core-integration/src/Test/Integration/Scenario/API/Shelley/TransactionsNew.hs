@@ -216,7 +216,7 @@ spec = describe "NEW_SHELLEY_TRANSACTIONS" $ do
 
         (_, ApiFee (Quantity feeMin) _ _ _) <- unsafeRequest ctx
 
-            (Link.getTransactionFee @'Shelley wa) constrPayload
+            (Link.getTransactionFeeOld @'Shelley wa) constrPayload
         rConstrTx <- request @(ApiConstructTransaction n) ctx
             (Link.createUnsignedTransaction @'Shelley wa) Default constrPayload
         verify rConstrTx
@@ -333,7 +333,7 @@ spec = describe "NEW_SHELLEY_TRANSACTIONS" $ do
             }|]
 
         (_, ApiFee (Quantity feeMin) _ _ _) <- unsafeRequest ctx
-            (Link.getTransactionFee @'Shelley wa) payload
+            (Link.getTransactionFeeOld @'Shelley wa) payload
         rTx <- request @(ApiConstructTransaction n) ctx
             (Link.createUnsignedTransaction @'Shelley wa) Default payload
         verify rTx
