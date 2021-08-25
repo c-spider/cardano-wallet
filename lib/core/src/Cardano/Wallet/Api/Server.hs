@@ -135,7 +135,6 @@ import Cardano.Wallet
     , ErrConstructTx (..)
     , ErrCreateMigrationPlan (..)
     , ErrCreateRandomAddress (..)
-    , ErrDecodeSignedTx (..)
     , ErrDerivePublicKey (..)
     , ErrFetchRewards (..)
     , ErrGetTransaction (..)
@@ -158,7 +157,6 @@ import Cardano.Wallet
     , ErrSignTx (..)
     , ErrStakePoolDelegation (..)
     , ErrStartTimeLaterThanEndTime (..)
-    , ErrSubmitExternalTx (..)
     , ErrSubmitTx (..)
     , ErrUpdatePassphrase (..)
     , ErrWalletAlreadyExists (..)
@@ -1541,7 +1539,7 @@ selectCoins
     -> Handler (ApiCoinSelection n)
 selectCoins ctx genChange (ApiT wid) body = do
     let md = body ^? #metadata . traverse . #getApiT
-    (wdrl, _) <-
+    (wdrl, _, _) <-
         mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
 
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
@@ -1583,25 +1581,22 @@ selectCoinsForJoin ctx knownPools getPoolStatus pid wid = do
     curEpoch <- getCurrentEpoch ctx
 
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
-        delegs <- liftHandler
-            $ W.joinStakePool @_ @s @k wrk curEpoch pools pid poolStatus wid
-        let deposits = mapMaybe fst delegs
+        delegs <- liftHandler $
+            W.joinStakePool @_ @s @k wrk curEpoch pools pid poolStatus wid
         let txCtx = defaultTransactionCtx
-                { txDelegationActions = snd <$> delegs
-                }
+                { txDelegationActions = NE.toList delegs }
 
         let transform = \s sel ->
                 W.assignChangeAddresses (delegationAddress @n) sel s
                 & uncurry (W.selectionToUnsignedTx (txWithdrawal txCtx))
         wal <- liftHandler $ W.readWalletUTxOIndex @_ @s @k wrk wid
-        utx <- liftHandler
-            $ W.selectAssetsNoOutputs @_ @s @k wrk wid wal txCtx transform
+        utx <- liftHandler $
+            W.selectAssetsNoOutputs @_ @s @k wrk wid wal txCtx transform
 
-        actionPaths <- liftHandler $ forM delegs $ \(_, action) ->
-            rewardActionPath @_ @s @k wrk wid action
-        let actionPath = Just (NE.fromList actionPaths)
-
-        pure $ mkApiCoinSelection deposits actionPath Nothing utx
+        deposits <- liftIO $ W.delegationActionDeposits wrk delegs
+        actionPaths <- liftHandler $
+            mapM (rewardActionPath @_ @s @k wrk wid) delegs
+        pure $ mkApiCoinSelection deposits (Just actionPaths) Nothing utx
 
 rewardActionPath
     :: forall ctx s k.
@@ -1831,13 +1826,13 @@ signTransaction
     -> ApiSignTransactionPostData
     -> Handler ApiSignedTransaction
 signTransaction _ ctx (ApiT wid) body = do
-    -- TODO: It is currently up to the user to add withdrawal information to the
-    -- request. In future we should determine the credentials required from
-    -- transaction and validate.
-    (_, mkRwdAcct) <- mkRewardAccountBuilder @_ @s @_ ctx wid wdrlReq
+    -- TODO: It is currently up to the user to specify withdrawal information in
+    -- the request. In future, we should only require withdrawal information in
+    -- the case of withdrawing from an external wallet.
+    (_, _, getRwdCred) <- mkRewardAccountBuilder @_ @s @_ ctx wid wdrlReq
 
     withWorkerCtx ctx wid liftE liftE $ \wrk -> liftHandler $
-        mkApi <$> W.signTransaction @_ @s @k wrk wid mkRwdAcct pwd txReq
+        mkApi <$> W.signTransaction @_ @s @k wrk wid getRwdCred pwd txReq
  where
    pwd = coerce (body ^. #passphrase . #getApiT)
    txReq = body ^. #transaction . #getApiT
@@ -1871,18 +1866,15 @@ postTransactionOld
 postTransactionOld ctx genChange (ApiT wid) body = do
     let pwd = coerce $ body ^. #passphrase . #getApiT
     let outs = addressAmountToTxOut <$> body ^. #payments
-    let md = body ^? #metadata . traverse . #getApiT
+    let txMetadata = body ^? #metadata . traverse . #getApiT
     let mTTL = body ^? #timeToLive . traverse . #getQuantity
 
-    (wdrl, mkRwdAcct) <-
+    (txWithdrawal, txRewardAccount, getRwdCred) <-
         mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
 
-    ttl <- liftIO $ W.getTxExpiry ti mTTL
+    txTimeToLive <- liftIO $ W.getTxExpiry ti mTTL
     let txCtx = defaultTransactionCtx
-            { txWithdrawal = wdrl
-            , txMetadata = md
-            , txTimeToLive = ttl
-            }
+            { txRewardAccount, txWithdrawal, txMetadata, txTimeToLive }
 
     (sel, tx, txMeta, txTime) <- withWorkerCtx ctx wid liftE liftE $ \wrk ->
       atomicallyWithHandler (ctx ^. walletLocks) (PostTransactionOld wid) $ do
@@ -1892,7 +1884,7 @@ postTransactionOld ctx genChange (ApiT wid) body = do
         sel' <- liftHandler
             $ W.assignChangeAddressesAndUpdateDb wrk wid genChange sel
         (tx, txMeta, txTime, sealedTx) <- liftHandler
-            $ W.buildAndSignTransaction @_ @s @k wrk wid mkRwdAcct pwd txCtx sel'
+            $ W.buildAndSignTransaction @_ @s @k wrk wid getRwdCred pwd txCtx sel'
         liftHandler
             $ W.submitTx @_ @s @k wrk wid (tx, txMeta, sealedTx)
         pure (sel, tx, txMeta, txTime)
@@ -2004,9 +1996,11 @@ postTransactionFeeOld
     -> PostTransactionFeeOldData n
     -> Handler ApiFee
 postTransactionFeeOld ctx (ApiT wid) body = do
-    (wdrl, _) <- mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
+    (txWithdrawal, txRewardAccount, _) <-
+        mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
     let txCtx = defaultTransactionCtx
-            { txWithdrawal = wdrl
+            { txRewardAccount
+            , txWithdrawal
             , txMetadata = getApiT <$> body ^. #metadata
             }
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
@@ -2059,26 +2053,28 @@ constructTransaction ctx config (ApiT wid) body = do
         liftHandler $ throwE $ ErrConstructTxNotImplemented
             "Multiple delegation actions not yet supported"
 
-    let md = body ^? #metadata . traverse . #getApiT
-    let mTTL = Nothing -- TODO: this will be tackled when transaction validity is supported
+    let txMetadata = body ^? #metadata . traverse . #getApiT
+    let mTTL = Nothing  -- TODO: this will be tackled when transaction validity is supported
+    txTimeToLive <- liftIO $ W.getTxExpiry ti mTTL
 
-    (wdrl, _) <- mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
+    (txWithdrawal, txRewardAccount, _) <-
+        mkRewardAccountBuilder @_ @s @_ ctx wid (body ^. #withdrawal)
 
-    delegs <- maybe (pure mempty)
+    txDelegationActions <- maybe (pure mempty)
         (fmap NE.toList . getDelegationActions @_ @s @k ctx config wid)
         (body ^. #delegations)
 
-    ttl <- liftIO $ W.getTxExpiry ti mTTL
     let txCtx = defaultTransactionCtx
-            { txWithdrawal = wdrl
-            , txMetadata = md
-            , txTimeToLive = ttl
-            , txDelegationActions = snd <$> delegs
+            { txRewardAccount
+            , txWithdrawal
+            , txDelegationActions
+            , txMetadata
+            , txTimeToLive
             }
 
     let transform = \s sel ->
             W.assignChangeAddresses (genChange config) sel s
-            & uncurry (W.selectionToUnsignedTx (txWithdrawal txCtx))
+            & uncurry (W.selectionToUnsignedTx txWithdrawal)
 
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
         -- fixme: Move this into Cardano.Wallet
@@ -2110,10 +2106,10 @@ constructTransaction ctx config (ApiT wid) body = do
             Just (ApiPaymentAll _) -> do
                 liftHandler $ throwE $ ErrConstructTxNotImplemented "ADP-909"
 
-        tx <- liftHandler $ W.constructTransaction @_ @s @k wrk wid txCtx sel
+        tx <- liftHandler $ W.constructTransaction @_ @k wrk txCtx sel
         pure $ ApiConstructTransaction
             { transaction = ApiT tx
-            , coinSelection = mkApiCoinSelection [] Nothing md sel'
+            , coinSelection = mkApiCoinSelection [] Nothing txMetadata sel'
             , fee = Quantity $ fromIntegral fee
             }
   where
@@ -2129,14 +2125,14 @@ getDelegationActions
     -> ConstructTransactionConfig s IO
     -> WalletId
     -> NonEmpty ApiMultiDelegationAction
-    -> Handler (NonEmpty (Maybe Coin, DelegationAction))
+    -> Handler (NonEmpty DelegationAction)
 getDelegationActions ctx config wid delegs = do
     -- fixme: getting the current epoch should never fail
     curEpoch <- liftHandler $ currentEpoch ti
     pools <- liftIO $ getKnownPools config
     actions <- liftIO $ forM delegs $ \case
-        Api.Joining (ApiT pid) _ix -> (, Join pid) <$> getPoolStatus config pid
-        Api.Leaving _ix -> pure (PoolNotRegistered, Quit)
+        Api.Joining (ApiT pid) _ix -> (, Delegate pid) <$> getPoolStatus config pid
+        Api.Leaving _ix -> pure (PoolNotRegistered, DeregisterKey)
     withWorkerCtx ctx wid liftE liftE $ \wrk -> liftHandler $
         W.stakePoolDelegation @_ @s @k wrk curEpoch pools wid actions
   where
@@ -2176,15 +2172,18 @@ joinStakePool ctx knownPools getPoolStatus apiPoolId (ApiT wid) body = do
     curEpoch <- getCurrentEpoch ctx
 
     (sel, tx, txMeta, txTime) <- withWorkerCtx ctx wid liftE liftE $ \wrk -> do
+        (txWithdrawal, txRewardAccount, getRwdCred) <-
+            mkRewardAccountBuilder @_ @s @_ ctx wid Nothing
+
         delegs <- liftHandler
             $ W.joinStakePool @_ @s @k wrk curEpoch pools pid poolStatus wid
 
-        (wdrl, mkRwdAcct) <- mkRewardAccountBuilder @_ @s @_ ctx wid Nothing
-        ttl <- liftIO $ W.getTxExpiry ti Nothing
+        txTimeToLive <- liftIO $ W.getTxExpiry ti Nothing
         let txCtx = defaultTransactionCtx
-                { txWithdrawal = wdrl
-                , txTimeToLive = ttl
-                , txDelegationActions = snd <$> delegs
+                { txRewardAccount
+                , txWithdrawal
+                , txTimeToLive
+                , txDelegationActions = NE.toList delegs
                 }
         wal <- liftHandler $ W.readWalletUTxOIndex @_ @s @k wrk wid
         sel <- liftHandler
@@ -2193,7 +2192,7 @@ joinStakePool ctx knownPools getPoolStatus apiPoolId (ApiT wid) body = do
         sel' <- liftHandler
             $ W.assignChangeAddressesAndUpdateDb wrk wid genChange sel
         (tx, txMeta, txTime, sealedTx) <- liftHandler
-            $ W.buildAndSignTransaction @_ @s @k wrk wid mkRwdAcct pwd txCtx sel'
+            $ W.buildAndSignTransaction @_ @s @k wrk wid getRwdCred pwd txCtx sel'
         liftHandler
             $ W.submitTx @_ @s @k wrk wid (tx, txMeta, sealedTx)
 
@@ -2264,14 +2263,17 @@ quitStakePool ctx (ApiT wid) body = do
     let pwd = coerce $ getApiT $ body ^. #passphrase
 
     (sel, tx, txMeta, txTime) <- withWorkerCtx ctx wid liftE liftE $ \wrk -> do
+        (txWithdrawal, txRewardAccount, getRwdCred) <-
+            mkRewardAccountBuilder @_ @s @_ ctx wid Nothing
+
         action <- liftHandler
             $ W.quitStakePool @_ @s @k wrk wid
 
-        (wdrl, mkRwdAcct) <- mkRewardAccountBuilder @_ @s @_ ctx wid Nothing
-        ttl <- liftIO $ W.getTxExpiry ti Nothing
+        txTimeToLive <- liftIO $ W.getTxExpiry ti Nothing
         let txCtx = defaultTransactionCtx
-                { txWithdrawal = wdrl
-                , txTimeToLive = ttl
+                { txRewardAccount
+                , txWithdrawal
+                , txTimeToLive
                 , txDelegationActions = [action]
                 }
 
@@ -2282,7 +2284,7 @@ quitStakePool ctx (ApiT wid) body = do
         sel' <- liftHandler
             $ W.assignChangeAddressesAndUpdateDb wrk wid genChange sel
         (tx, txMeta, txTime, sealedTx) <- liftHandler
-            $ W.buildAndSignTransaction @_ @s @k wrk wid mkRwdAcct pwd txCtx sel'
+            $ W.buildAndSignTransaction @_ @s @k wrk wid getRwdCred pwd txCtx sel'
         liftHandler
             $ W.submitTx @_ @s @k wrk wid (tx, txMeta, sealedTx)
 
@@ -2426,7 +2428,7 @@ createMigrationPlan
         -- ^ Target addresses
     -> Handler (ApiWalletMigrationPlan n)
 createMigrationPlan ctx withdrawalType (ApiT wid) postData = do
-    (rewardWithdrawal, _) <-
+    (rewardWithdrawal, _, _) <-
         mkRewardAccountBuilder @_ @s @_ ctx wid withdrawalType
     withWorkerCtx ctx wid liftE liftE $ \wrk -> liftHandler $ do
         (wallet, _, _) <- withExceptT ErrCreateMigrationPlanNoSuchWallet $
@@ -2516,24 +2518,25 @@ migrateWallet
     -> ApiWalletMigrationPostData n p
     -> Handler (NonEmpty (ApiTransaction n))
 migrateWallet ctx withdrawalType (ApiT wid) postData = do
-    (rewardWithdrawal, mkRewardAccount) <-
+    (wdrl, txRewardAccount, mkRewardAccount) <-
         mkRewardAccountBuilder @_ @s @_ ctx wid withdrawalType
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
-        plan <- liftHandler $ W.createMigrationPlan wrk wid rewardWithdrawal
+        plan <- liftHandler $ W.createMigrationPlan wrk wid wdrl
         txTimeToLive <- liftIO $ W.getTxExpiry ti Nothing
         selectionWithdrawals <- liftHandler
             $ failWith ErrCreateMigrationPlanEmpty
             $ W.migrationPlanToSelectionWithdrawals
-                plan rewardWithdrawal addresses
+                plan wdrl addresses
         forM selectionWithdrawals $ \(selection, txWithdrawal) -> do
-            let txContext = defaultTransactionCtx
-                    { txWithdrawal
+            let txCtx = defaultTransactionCtx
+                    { txRewardAccount
+                    , txWithdrawal
                     , txTimeToLive
                     , txDelegationActions = []
                     }
             (tx, txMeta, txTime, sealedTx) <- liftHandler $
                 W.buildAndSignTransaction @_ @s @k wrk wid mkRewardAccount pwd
-                    txContext (selection {changeGenerated = []})
+                    txCtx (selection {changeGenerated = []})
             liftHandler $
                 W.submitTx @_ @s @k wrk wid (tx, txMeta, sealedTx)
             liftIO $ mkApiTransaction
@@ -2784,10 +2787,11 @@ rndStateChange ctx (ApiT wid) pwd =
         W.withRootKey @_ @s @k wrk wid pwd ErrSignPaymentWithRootKey $ \xprv scheme ->
             pure (xprv, preparePassphrase scheme pwd)
 
-type RewardAccountBuilder k
+type RewardAccountCredential k
         =  (k 'RootK XPrv, Passphrase "encryption")
         -> (XPrv, Passphrase "encryption")
 
+-- | Return a credential function given the withdrawal request (if any).
 mkRewardAccountBuilder
     :: forall ctx s k.
         ( ctx ~ ApiLayer s k
@@ -2799,22 +2803,22 @@ mkRewardAccountBuilder
     => ctx
     -> WalletId
     -> Maybe ApiWithdrawalPostData
-    -> Handler (Withdrawal, RewardAccountBuilder k)
+    -> Handler (Withdrawal, Maybe RewardAccount, RewardAccountCredential k)
 mkRewardAccountBuilder ctx wid withdrawal =
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
         rewardAccount <- liftHandler $
             W.readRewardAccountDerivation @_ @s @k wrk wid
 
         case (withdrawal, rewardAccount) of
+            (Nothing, _) ->
+                pure (NoWithdrawal, snd . snd <$> rewardAccount, selfRewardCredentials)
+
             (Just _, Nothing) ->
                 liftHandler $ throwE ErrReadRewardAccountNotAShelleyWallet
 
-            (Nothing, _) ->
-                pure (NoWithdrawal, selfRewardCredentials)
-
             (Just SelfWithdrawal, Just (path, (_xpub, acct))) -> do
                 wdrl <- liftHandler $ W.queryRewardBalance @_ wrk acct
-                (, selfRewardCredentials) . WithdrawalSelf acct path
+                (, Just acct, selfRewardCredentials) . WithdrawalSelf acct path
                     <$> liftIO (W.readNextWithdrawal @_ @k wrk wdrl)
 
             (Just (ExternalWithdrawal (ApiMnemonicT mw)), Just _) -> do
@@ -2823,7 +2827,7 @@ mkRewardAccountBuilder ctx wid withdrawal =
                     >>= liftIO . W.readNextWithdrawal @_ @k wrk
                 when (wdrl == Coin 0) $ do
                     liftHandler $ throwE ErrWithdrawalNotWorth
-                pure (WithdrawalExternal acct path wdrl, const (xprv, mempty))
+                pure (WithdrawalExternal acct path wdrl, Just acct, const (xprv, mempty))
   where
     selfRewardCredentials (rootK, pwdP) =
         (getRawKey $ deriveRewardAccount @k pwdP rootK, pwdP)
@@ -2848,7 +2852,7 @@ mkApiCoinSelection deps mcerts metadata cs =
         , outputs = mkApiOutput <$> view #unsignedOutputs cs
         , change = mkApiChange <$> view #unsignedChange cs
         , collateral = mkApiCollateral <$> view #unsignedCollateral cs
-        , withdrawals = mkApiWithdrawal <$> view #unsignedWithdrawals cs
+        , withdrawals = mkWithdrawal <$> view #unsignedWithdrawals cs
         , certificates = NE.map (uncurry mkCertificate) <$> mcerts
         , deposits = mkApiCoin <$> deps
         , metadata = ApiBytesT . serialiseToCBOR <$> metadata
@@ -2859,13 +2863,12 @@ mkApiCoinSelection deps mcerts metadata cs =
         -> DelegationAction
         -> Api.ApiCertificate
     mkCertificate (fmap ApiT -> stakePath) = \case
-        Join pid -> Api.JoinPool stakePath (ApiT pid)
+        Delegate pid -> Api.JoinPool stakePath (ApiT pid)
         RegisterKey -> Api.RegisterRewardAccount stakePath
-        Quit -> Api.QuitPool stakePath
+        DeregisterKey -> Api.QuitPool stakePath
 
     mkApiInput :: input -> ApiCoinSelectionInput n
-    mkApiInput
-        (TxIn txid index, TxOut addr (TokenBundle amount assets), path) =
+    mkApiInput (TxIn txid index, TxOut addr (TokenBundle amount assets), path) =
         ApiCoinSelectionInput
             { id = ApiT txid
             , index = index
@@ -2882,21 +2885,15 @@ mkApiCoinSelection deps mcerts metadata cs =
         (ApiT assets)
 
     mkApiChange :: change -> ApiCoinSelectionChange n
-    mkApiChange txChange =
-        ApiCoinSelectionChange
-            { address =
-                (ApiT $ view #address txChange, Proxy @n)
-            , amount =
-                coinToQuantity $ view #amount txChange
-            , assets =
-                ApiT $ view #assets txChange
-            , derivationPath =
-                ApiT <$> view #derivationPath txChange
-            }
+    mkApiChange txChange = ApiCoinSelectionChange
+        { address = (ApiT $ view #address txChange, Proxy @n)
+        , amount = coinToQuantity $ view #amount txChange
+        , assets = ApiT $ view #assets txChange
+        , derivationPath = ApiT <$> view #derivationPath txChange
+        }
 
     mkApiCollateral :: input -> ApiCoinSelectionCollateral n
-    mkApiCollateral
-        (TxIn txid index, TxOut addr (TokenBundle amount _), path) =
+    mkApiCollateral (TxIn txid index, TxOut addr (TokenBundle amount _), path) =
         ApiCoinSelectionCollateral
             { id = ApiT txid
             , index = index
@@ -2905,16 +2902,12 @@ mkApiCoinSelection deps mcerts metadata cs =
             , derivationPath = ApiT <$> path
             }
 
-    mkApiWithdrawal :: withdrawal -> ApiCoinSelectionWithdrawal n
-    mkApiWithdrawal (rewardAcct, wdrl, path) =
-        ApiCoinSelectionWithdrawal
-            { stakeAddress =
-                (ApiT rewardAcct, Proxy @n)
-            , amount =
-                coinToQuantity wdrl
-            , derivationPath =
-                ApiT <$> path
-            }
+    mkWithdrawal :: withdrawal -> ApiCoinSelectionWithdrawal n
+    mkWithdrawal (rewardAcct, wdrl, path) = ApiCoinSelectionWithdrawal
+        { stakeAddress = (ApiT rewardAcct, Proxy @n)
+        , amount = coinToQuantity wdrl
+        , derivationPath = ApiT <$> path
+        }
 
 data MkApiTransactionParams = MkApiTransactionParams
     { txId :: Hash "Tx"
@@ -3490,28 +3483,6 @@ instance IsServerError ErrConstructTx where
 instance IsServerError ErrMintBurnAssets where
     toServerError = \case
         ErrMintBurnNotImplemented msg -> apiError err501 NotImplemented msg
-
-instance IsServerError ErrDecodeSignedTx where
-    toServerError = \case
-        ErrDecodeSignedTxWrongPayload _ ->
-            apiError err400 MalformedTxPayload $ mconcat
-                [ "I couldn't verify that the payload has the correct binary "
-                , "format. Therefore I couldn't send it to the node. Please "
-                , "check the format and try again."
-                ]
-        ErrDecodeSignedTxNotSupported ->
-            apiError err404 UnexpectedError $ mconcat
-                [ "This endpoint is not supported by the backend currently "
-                , "in use. Please try a different backend."
-                ]
-
-instance IsServerError ErrSubmitExternalTx where
-    toServerError = \case
-        ErrSubmitExternalTxNetwork e -> toServerError e
-        ErrSubmitExternalTxDecode e -> (toServerError e)
-            { errHTTPCode = 400
-            , errReasonPhrase = errReasonPhrase err400
-            }
 
 instance IsServerError ErrRemoveTx where
     toServerError = \case

@@ -116,12 +116,10 @@ import Cardano.Wallet.Shelley.Compatibility
     ( AnyShelleyBasedEra (..)
     , computeTokenBundleSerializedLengthBytes
     , getShelleyBasedEra
-    , maxTokenBundleSerializedLengthBytes
     , shelleyToCardanoEra
     )
 import Cardano.Wallet.Shelley.Transaction
-    ( TxPayload (..)
-    , TxSkeleton (..)
+    ( TxSkeleton (..)
     , TxWitnessTag (..)
     , TxWitnessTagFor
     , estimateTxCost
@@ -635,8 +633,7 @@ binaryCalculationsSpec' era =
           ledgerTx = Cardano.makeSignedTransaction addrWits unsigned
           addrWits = map (mkByronWitness unsigned net Nothing) pairs
           fee = selectionDelta txOutCoin cs
-          payload = TxPayload md mempty
-          Right unsigned = toCardanoTxBody era payload slotNo [] cs fee
+          Right unsigned = toCardanoTxBody era md mempty slotNo [] cs fee
           cs = SelectionResult
             { inputsSelected = NE.fromList inps
             , extraCoinSource = Nothing
@@ -644,7 +641,7 @@ binaryCalculationsSpec' era =
             , changeGenerated = chgs
             , utxoRemaining = UTxOIndex.empty
             }
-          inps = Map.toList $ getUTxO utxo
+          inps = Map.toList $ unUTxO utxo
 
 transactionConstraintsSpec :: Spec
 transactionConstraintsSpec = describe "Transaction constraints" $ do
@@ -712,10 +709,9 @@ makeShelleyTx :: IsShelleyBasedEra era => ShelleyBasedEra era -> DecodeSetup -> 
 makeShelleyTx era testCase = Cardano.makeSignedTransaction addrWits unsigned
   where
     DecodeSetup utxo outs md slotNo pairs _netwk = testCase
-    inps = Map.toList $ getUTxO utxo
+    inps = Map.toList $ unUTxO utxo
     fee = selectionDelta txOutCoin cs
-    payload = TxPayload md mempty
-    Right unsigned = toCardanoTxBody era payload slotNo [] cs fee
+    Right unsigned = toCardanoTxBody era md mempty slotNo [] cs fee
     addrWits = map (mkShelleyKeyWitness unsigned) pairs
     cs = SelectionResult
         { inputsSelected = NE.fromList inps
@@ -745,10 +741,9 @@ makeByronTx :: IsShelleyBasedEra era => ShelleyBasedEra era -> ForByron DecodeSe
 makeByronTx era testCase = Cardano.makeSignedTransaction byronWits unsigned
   where
     ForByron (DecodeSetup utxo outs _ slotNo pairs ntwrk) = testCase
-    inps = Map.toList $ getUTxO utxo
+    inps = Map.toList $ unUTxO utxo
     fee = selectionDelta txOutCoin cs
-    payload = TxPayload Nothing []
-    Right unsigned = toCardanoTxBody era payload slotNo [] cs fee
+    Right unsigned = toCardanoTxBody era Nothing [] slotNo [] cs fee
     byronWits = map (mkByronWitness unsigned ntwrk Nothing) pairs
     cs = SelectionResult
         { inputsSelected = NE.fromList inps
@@ -817,7 +812,7 @@ instance Arbitrary DecodeSetup where
             <$> listOf1 arbitrary
             <*> arbitrary
             <*> arbitrary
-            <*> vectorOf (Map.size $ getUTxO utxo) arbitrary
+            <*> vectorOf (Map.size $ unUTxO utxo) arbitrary
             <*> arbitrary
 
     shrink (DecodeSetup i o m t k n) =

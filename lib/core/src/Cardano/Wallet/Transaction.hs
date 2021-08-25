@@ -6,10 +6,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
 -- |
@@ -24,8 +22,8 @@ module Cardano.Wallet.Transaction
     (
     -- * Interface
       TransactionLayer (..)
-    , mkTransaction
     , DelegationAction (..)
+    , delegationActionDeposit
     , TransactionCtx (..)
     , defaultTransactionCtx
     , Withdrawal (..)
@@ -36,14 +34,14 @@ module Cardano.Wallet.Transaction
     -- * Keys and Signing
     , SignTransactionResult (..)
     , SignTransactionWitness (..)
+    , SignTransactionWitnessStake (..)
     , DecryptedSigningKey (..)
     , SignTransactionKeyStore (..)
     , keyStoreLookup
-    , keyStoreLookupWithdrawal
+    , keyStoreLookupStake
 
     -- * Errors
     , ErrSignTx (..)
-    , ErrDecodeSignedTx (..)
     , ErrMkTransaction (..)
     , ErrCannotJoin (..)
     , ErrCannotQuit (..)
@@ -87,27 +85,26 @@ import Data.Bifunctor
     ( Bifunctor (..) )
 import Data.ByteString
     ( ByteString )
-import Data.Generics.Internal.VL.Lens
-    ( view )
 import Data.List.NonEmpty
     ( NonEmpty )
-import qualified Data.List.NonEmpty as NE
 import Data.Text
     ( Text )
+import Data.Text.Class
+    ( ToText (..) )
 import Fmt
-    ( Buildable (..), genericF )
+    ( Buildable (..), blockMapF, genericF, listF' )
 import GHC.Generics
     ( Generic )
+
+import qualified Data.List.NonEmpty as NE
 
 data TransactionLayer k tx = TransactionLayer
     { mkTransactionBody
         :: (AnyCardanoEra, ProtocolParameters)
             -- Era and protocol parameters for which the transaction should be
             -- created.
-        -> Maybe RewardAccount
-            -- Hash of stake address public key, if there is one.
         -> TransactionCtx
-            -- An additional context about the transaction
+            -- Additional context about the transaction.
         -> SelectionResult TxOut
             -- A balanced coin selection where all change addresses have been
             -- assigned.
@@ -120,11 +117,11 @@ data TransactionLayer k tx = TransactionLayer
         -- The function returns CBOR-ed transaction body to be signed in another step.
 
     , mkSignedTransaction
-        :: SignTransactionKeyStore (k 'AddressK XPrv)
+        :: SignTransactionKeyStore (k 'AddressK XPrv) XPrv
             -- Key store
         -> tx
             -- serialized unsigned transaction
-        -> SignTransactionResult (k 'AddressK XPrv) () tx
+        -> SignTransactionResult (k 'AddressK XPrv) XPrv () tx
         -- ^ Sign a transaction
 
     , calcMinimumCost
@@ -161,32 +158,6 @@ data TransactionLayer k tx = TransactionLayer
     }
     deriving Generic
 
--- | Construct a standard transaction
---
--- "Standard" here refers to the fact that we do not deal with redemption,
--- multisignature transactions, etc.
---
--- This expects as a first argument a mean to compute or lookup private
--- key corresponding to a particular address.
-mkTransaction
-    :: TransactionLayer k tx
-    -> (AnyCardanoEra, ProtocolParameters)
-    -- ^ Era and protocol parameters for which the transaction should be
-    -- created.
-    -> SignTransactionKeyStore (k 'AddressK XPrv)
-    -- ^ Key store
-    -> TransactionCtx
-    -- ^ An additional context about the transaction
-    -> SelectionResult TxOut
-    -- ^ A balanced coin selection where all change addresses have been
-    -- assigned.
-    -> Either ErrMkTransaction (Tx, tx)
-mkTransaction tl eraPP keyStore ctx cs = do
-    let rewardAcct = withdrawalRewardAccount (txWithdrawal ctx)
-    unsigned <- mkTransactionBody tl eraPP rewardAcct ctx cs
-    let signed = view #tx $ mkSignedTransaction tl keyStore unsigned
-    pure (addResolvedInputs cs (decodeTx tl signed), signed)
-
 -- | Use coin selection to provide resolved inputs of transaction.
 addResolvedInputs :: SelectionResult change -> Tx -> Tx
 addResolvedInputs cs tx = tx
@@ -196,66 +167,114 @@ addResolvedInputs cs tx = tx
 -- details that are known upfront about the transaction and are used to
 -- construct it from inputs selected from the wallet's UTxO.
 data TransactionCtx = TransactionCtx
-    { txWithdrawal :: Withdrawal
+    { txRewardAccount :: Maybe RewardAccount
+    -- ^ Reward account used for withdrawals and delegation actions.
+    , txWithdrawal :: Withdrawal
     -- ^ Withdrawal amount from a reward account, can be zero.
+    , txDelegationActions :: [DelegationAction]
+    -- ^ Joining and/or leaving stake pools.
     , txMetadata :: Maybe TxMetadata
     -- ^ User or application-defined metadata to embed in the transaction.
     , txTimeToLive :: SlotNo
     -- ^ Transaction expiry (TTL) slot.
-    , txDelegationActions :: [DelegationAction]
-    -- ^ Joining and/or leaving stake pools.
     } deriving (Show, Generic, Eq)
 
+instance Buildable TransactionCtx where
+    build = genericF
+
+-- | A default context with sensible placeholder. Can be used to reduce
+-- repetition for changing only sub-part of the default context.
+defaultTransactionCtx :: TransactionCtx
+defaultTransactionCtx = TransactionCtx
+    { txRewardAccount = Nothing
+    , txWithdrawal = NoWithdrawal
+    , txDelegationActions = mempty
+    , txMetadata = Nothing
+    , txTimeToLive = maxBound
+    }
+
+-- TODO: Split out RewardAccount from Withdrawal
+-- | A specification from the user as to whether a transaction should include a
+-- reward account withdrawal, and if so, from which reward account.
 data Withdrawal
     = WithdrawalSelf !RewardAccount !(NonEmpty DerivationIndex) !Coin
+    -- ^ Withdraw from a reward account belonging to this wallet.
     | WithdrawalExternal !RewardAccount !(NonEmpty DerivationIndex) !Coin
+    -- ^ Withdraw from a reward account belonging to another wallet.
     | NoWithdrawal
+    -- ^ Don't withdraw anything in this transaction.
     deriving (Show, Eq)
 
+instance Buildable Withdrawal where
+    build = \case
+        NoWithdrawal -> "None"
+        WithdrawalSelf acct ix amt -> format "this wallet" acct ix amt
+        WithdrawalExternal acct ix amt -> format "other wallet" acct ix amt
+      where
+        format f acct ix amt = blockMapF
+            [ ("From" :: Text, f)
+            , ("Reward Account", build acct)
+            , ("Derivation Index", listF' (build . toText) ix)
+            , ("Amount", build amt)
+            ]
+
+-- | The amount expected to be withdrawn, or zero if no withdrawal.
 withdrawalToCoin :: Withdrawal -> Coin
 withdrawalToCoin = \case
     WithdrawalSelf _ _ c -> c
     WithdrawalExternal _ _ c -> c
     NoWithdrawal -> Coin 0
 
+-- | The reward account to use for this withdrawal (if any).
 withdrawalRewardAccount :: Withdrawal -> Maybe RewardAccount
 withdrawalRewardAccount = \case
     WithdrawalSelf acct _ _ -> Just acct
     WithdrawalExternal acct _ _ -> Just acct
     NoWithdrawal -> Nothing
 
--- | A default context with sensible placeholder. Can be used to reduce
--- repetition for changing only sub-part of the default context.
-defaultTransactionCtx :: TransactionCtx
-defaultTransactionCtx = TransactionCtx
-    { txWithdrawal = NoWithdrawal
-    , txMetadata = Nothing
-    , txTimeToLive = maxBound
-    , txDelegationActions = mempty
-    }
-
 -- | Whether the user is attempting any particular delegation action.
-data DelegationAction = RegisterKey | Join PoolId | Quit
+data DelegationAction = RegisterKey | Delegate PoolId | DeregisterKey
     deriving (Show, Eq, Generic)
 
-data SignTransactionResult sk wit tx = SignTransactionResult
+instance Buildable DelegationAction where
+    build = genericF
+
+-- | Get the number of deposits required for the given delegation action. This
+-- should be multiplied by the actual deposit amount for use in a transaction.
+--
+-- A positive number means deposit returned and a negative number means deposit
+-- taken.
+delegationActionDeposit :: Integral n => (n -> a) -> DelegationAction -> a
+delegationActionDeposit f = \case
+    RegisterKey -> f (-1)
+    Delegate _ -> f 0
+    DeregisterKey -> f 1
+
+-- | A transaction with information about the witnesses (if any) which were
+-- added by 'signTransaction`.
+data SignTransactionResult psk ssk wit tx = SignTransactionResult
     { tx :: !tx
-    , addressWitnesses :: ![SignTransactionWitness sk wit]
-    , withdrawalWitnesses :: ![(RewardAccount, wit)]
-    , certificateWitnesses :: ![(RewardAccount, wit)]
+    , addressWitnesses :: ![SignTransactionWitness psk wit]
+    , withdrawalWitnesses :: ![SignTransactionWitnessStake ssk wit]
+    , certificateWitnesses :: ![SignTransactionWitnessStake ssk wit]
     } deriving (Show, Eq, Generic, Functor)
 
-instance Bifunctor (SignTransactionResult sk) where
-    first f (SignTransactionResult t a w c) =
-        SignTransactionResult t (fmap (fmap f) a) (fmap (fmap f) w) (fmap (fmap f) c)
-    second f (SignTransactionResult t a w c) =
-        SignTransactionResult (f t) a w c
+instance Bifunctor (SignTransactionResult psk ssk) where
+    -- | Map over the transaction type parameter.
+    second f (SignTransactionResult t a w c) = SignTransactionResult (f t) a w c
+    -- | Map over the witness type parameter.
+    first f (SignTransactionResult t a w c) = SignTransactionResult t
+            (fmap (fmap f) a) (fmap (fmap f) w) (fmap (fmap f) c)
+
+instance (Buildable wit, Buildable tx) => Buildable (SignTransactionResult psk ssk wit tx) where
+    build = genericF
 
 -- | In the wallet, signing keys are symmetrically encrypted at rest using a key
 -- derived from the user's spending passphrasee. This data type pairs an
 -- encrypted signing key with the passphrase needed to decrypt it.
 --
--- We call this type "decrypted", because although the key is still encrypted, the passphrase is right there, so it may as well be decrypted.
+-- We call this type "decrypted", because although the key is still encrypted,
+-- the passphrase is right there, so it may as well be decrypted.
 --
 -- Use 'decryptSigningKey' to actually get the key which can be used for
 -- witnessing transactions.
@@ -267,20 +286,42 @@ data DecryptedSigningKey sk = DecryptedSigningKey
     } deriving (Show, Eq, Generic, Functor)
 
 -- | Produces signing keys for transaction inputs.
-data SignTransactionKeyStore k = SignTransactionKeyStore
-    { stakeCreds :: RewardAccount -> Maybe (DecryptedSigningKey XPrv)
+data SignTransactionKeyStore psk ssk = SignTransactionKeyStore
+    { stakeCreds :: RewardAccount -> Maybe (DecryptedSigningKey ssk)
     -- ^ Optional key credential for withdrawing from the wallet's reward account.
     , resolver :: TxIn -> Maybe Address
     -- ^ A function to lookup the output address from a transaction input.
-    , keyFrom :: Address -> Maybe (DecryptedSigningKey k)
+    , keyFrom :: Address -> Maybe (DecryptedSigningKey psk)
     -- ^ A function to lookup the vkey/bootstrap credential for an address.
     } deriving Generic
 
+instance Buildable (DecryptedSigningKey sk) where
+    build _ = "<protected>"
+
+-- | Information about a transaction witness that was added by
+-- 'signTransaction', or not added, as the case may be.
+data SignTransactionWitness sk wit = SignTransactionWitness
+    { txIn :: TxIn
+    -- ^ The transaction input being signed for.
+    , address :: Maybe Address
+    -- ^ The address corresponding to 'txIn', if the address belongs to this
+    -- wallet.
+    , cred :: !(Maybe (DecryptedSigningKey sk))
+    -- ^ Credential used in signing for the address, if the wallet has the
+    -- necessary key.
+    , witness :: !(Maybe wit)
+    -- ^ The actual signature for this transaction input, if it was possible to
+    -- produce a witness.
+    } deriving (Show, Eq, Generic, Functor)
+
+instance Buildable wit => Buildable (SignTransactionWitness sk wit) where
+    build = genericF
+
 keyStoreLookup
-    :: SignTransactionKeyStore k
-    -> (DecryptedSigningKey k -> Address -> wit)
+    :: SignTransactionKeyStore psk ssk
+    -> (DecryptedSigningKey psk -> Address -> wit)
     -> TxIn
-    -> SignTransactionWitness k wit
+    -> SignTransactionWitness psk wit
 keyStoreLookup SignTransactionKeyStore{resolver,keyFrom} mkWit txIn =
     case resolver txIn of
         address@(Just addr) -> case keyFrom addr of
@@ -291,35 +332,33 @@ keyStoreLookup SignTransactionKeyStore{resolver,keyFrom} mkWit txIn =
     res = SignTransactionWitness
         { txIn, address = Nothing, cred = Nothing, witness = Nothing }
 
-keyStoreLookupWithdrawal
-    :: SignTransactionKeyStore k
-    -> (DecryptedSigningKey XPrv -> wit)
-    -> RewardAccount
-    -> Maybe (RewardAccount, wit)
-keyStoreLookupWithdrawal SignTransactionKeyStore{stakeCreds} mkWit acct =
-    (acct,) . mkWit <$> stakeCreds acct
-
-data SignTransactionWitness sk wit = SignTransactionWitness
-    { txIn :: TxIn
-    , address :: Maybe Address
-    , cred :: !(Maybe (DecryptedSigningKey sk))
+-- | Information about a transaction witness that was added by
+-- 'signTransaction', or not added, as the case may be. This is similar to
+-- 'SignTransactionWitness', except for witnesses involved in the signing of a
+-- delegation certificate, or spending delegation rewards.
+data SignTransactionWitnessStake k wit = SignTransactionWitnessStake
+    { rewardAccount :: RewardAccount
+    -- ^ The 'RewardAccount' being signed for.
+    , cred :: !(Maybe (DecryptedSigningKey k))
+    -- ^ Credential used in signing for the address, if the wallet has the
+    -- necessary key.
     , witness :: !(Maybe wit)
+    -- ^ The actual signature, if it was possible to produce a witness.
     } deriving (Show, Eq, Generic, Functor)
 
-instance (Buildable wit, Buildable tx) => Buildable (SignTransactionResult sk wit tx) where
+instance Buildable wit => Buildable (SignTransactionWitnessStake k wit) where
     build = genericF
 
-instance Buildable wit => Buildable (SignTransactionWitness sk wit) where
-    build = genericF
-
-instance Buildable (DecryptedSigningKey sk) where
-    build _ = "<protected>"
-
--- | Error while trying to decode externally signed transaction
-data ErrDecodeSignedTx
-    = ErrDecodeSignedTxWrongPayload Text
-    | ErrDecodeSignedTxNotSupported
-    deriving (Generic, Show, Eq)
+keyStoreLookupStake
+    :: SignTransactionKeyStore psk ssk
+    -> (DecryptedSigningKey ssk -> wit)
+    -> RewardAccount
+    -> SignTransactionWitnessStake ssk wit
+keyStoreLookupStake SignTransactionKeyStore{stakeCreds} mkWit rewardAccount =
+  SignTransactionWitnessStake { rewardAccount, cred, witness }
+  where
+    cred = stakeCreds rewardAccount
+    witness = mkWit <$> cred
 
 data ErrMkTransaction
     = ErrMkTransactionNoSuchWallet WalletId
