@@ -86,15 +86,15 @@ import Cardano.Wallet.Shelley.Compatibility
     , interval0
     , interval1
     , invertUnitInterval
-    , isInternalError
     , toCardanoHash
     , toCardanoValue
     , toPoint
     , tokenBundleSizeAssessor
-    , unsafeIntToWord
     )
 import Cardano.Wallet.Unsafe
-    ( unsafeMkEntropy )
+    ( unsafeIntToWord, unsafeMkEntropy )
+import Cardano.Wallet.Util
+    ( isInternalError )
 import Codec.Binary.Bech32.TH
     ( humanReadablePart )
 import Codec.Binary.Encoding
