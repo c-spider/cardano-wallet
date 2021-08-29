@@ -6,6 +6,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -29,10 +30,17 @@ module Cardano.Wallet.Logging
     , unliftIOTracer
 
       -- * Logging and timing IO actions
-    , BracketLog (..)
+    , BracketLog
+    , BracketLog' (..)
     , LoggedException (..)
     , bracketTracer
+    , bracketTracer'
     , produceTimings
+
+      -- * Simple logging around monadic functions
+    , resultTracer
+    , formatResultMsg
+    , resultSeverity
 
       -- * Combinators
     , flatContramapTracer
@@ -55,10 +63,12 @@ import Control.DeepSeq
     ( NFData (..) )
 import Control.Monad
     ( when )
+import Control.Monad.Catch
+    ( MonadMask )
 import Control.Monad.IO.Unlift
     ( MonadIO (..), MonadUnliftIO )
 import Control.Monad.Trans.Except
-    ( ExceptT (..) )
+    ( ExceptT (..), runExceptT )
 import Control.Tracer
     ( Tracer (..), contramap, natTracer, nullTracer, traceWith )
 import Control.Tracer.Transformers.ObserveOutcome
@@ -68,7 +78,9 @@ import Control.Tracer.Transformers.ObserveOutcome
     , mkOutcomeExtractor
     )
 import Data.Aeson
-    ( ToJSON (..), object, (.=) )
+    ( ToJSON (..), Value (Null), object, (.=) )
+import Data.Functor
+    ( ($>) )
 import Data.Text
     ( Text )
 import Data.Text.Class
@@ -79,6 +91,10 @@ import Data.Time.Clock.System
     ( getSystemTime, systemToTAITime )
 import Data.Time.Clock.TAI
     ( AbsoluteTime, diffAbsoluteTime )
+import Fmt
+    ( Buildable (..), Builder, blockListF, blockMapF, nameF )
+import GHC.Exts
+    ( IsList (..) )
 import GHC.Generics
     ( Generic )
 import UnliftIO.Exception
@@ -89,10 +105,7 @@ import UnliftIO.Exception
     , withException
     )
 
-import Control.Monad.Catch
-    ( MonadMask )
 import qualified Data.ByteString.Char8 as B8
-import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 
 -- | Converts a 'Text' trace into any other type of trace that has a 'ToText'
@@ -159,38 +172,11 @@ unliftIOTracer :: MonadIO m => Tracer IO a -> Tracer m a
 unliftIOTracer = natTracer liftIO
 
 {-------------------------------------------------------------------------------
-                                Bracketed logging
+                             Logging of Exceptions
 -------------------------------------------------------------------------------}
 
--- | Used for tracing around an action.
-data BracketLog
-    = BracketStart
-    -- ^ Logged before the action starts.
-    | BracketFinish
-    -- ^ Logged after the action finishes.
-    | BracketException (LoggedException SomeException)
-    -- ^ Logged when the action throws an exception.
-    | BracketAsyncException (LoggedException SomeException)
-    -- ^ Logged when the action receives an async exception.
-    deriving (Generic, Show, Eq, ToJSON)
-
-instance ToText BracketLog where
-    toText = \case
-        BracketStart -> "start"
-        BracketFinish -> "finish"
-        BracketException e -> "exception: " <> toText e
-        BracketAsyncException e -> "cancelled: " <> toText e
-
-instance HasPrivacyAnnotation BracketLog
-instance HasSeverityAnnotation BracketLog where
-    -- | Default severities for 'BracketLog' - the enclosing log message may of
-    -- course use different values.
-    getSeverityAnnotation = \case
-        BracketStart -> Debug
-        BracketFinish -> Debug
-        BracketException _ -> Error
-        BracketAsyncException _ -> Debug
-
+-- | Exception wrapper with typeclass instances that exception types often don't
+-- have.
 newtype LoggedException e = LoggedException e
     deriving (Generic, Show, Ord)
 
@@ -199,8 +185,10 @@ instance NFData e => NFData (LoggedException e)
 instance NFData (LoggedException SomeException) where
     rnf (LoggedException e) = rnf (show e)
 
-instance Exception e => ToText (LoggedException e) where
-    toText (LoggedException e) = T.pack $ displayException e
+instance Exception e => ToText (LoggedException e)
+
+instance Exception e => Buildable (LoggedException e) where
+    build (LoggedException e) = build $ displayException e
 
 instance Show e => Eq (LoggedException e) where
     a == b = show a == show b
@@ -208,26 +196,105 @@ instance Show e => Eq (LoggedException e) where
 instance Exception e => ToJSON (LoggedException e) where
     toJSON e = object ["exception" .= toText e]
 
-exceptionMsg :: SomeException -> BracketLog
+exceptionMsg :: SomeException -> (BracketLog' r)
 exceptionMsg e = if isSyncException e
     then BracketException $ LoggedException e
     else BracketAsyncException $ LoggedException e
 
+{-------------------------------------------------------------------------------
+                                Bracketed logging
+-------------------------------------------------------------------------------}
+
+-- | Used for tracing around an action.
+data BracketLog' r
+    = BracketStart
+    -- ^ Logged before the action starts.
+    | BracketFinish r
+    -- ^ Logged after the action finishes.
+    | BracketException (LoggedException SomeException)
+    -- ^ Logged when the action throws an exception.
+    | BracketAsyncException (LoggedException SomeException)
+    -- ^ Logged when the action receives an async exception.
+    deriving (Generic, Show, Eq, ToJSON)
+
+instance Buildable r => ToText (BracketLog' r)
+
+instance Buildable r => Buildable (BracketLog' r) where
+    build = buildBracketLog build
+
+buildBracketLog :: (t -> Builder) -> BracketLog' t -> Builder
+buildBracketLog toBuilder = \case
+    BracketStart -> "start"
+    BracketFinish (toBuilder -> r)
+        | r == mempty -> "finish"
+        | otherwise -> "finish: " <> r
+    BracketException e -> "exception: " <> build e
+    BracketAsyncException e -> "cancelled: " <> build e
+
+instance HasPrivacyAnnotation (BracketLog' r)
+instance HasSeverityAnnotation (BracketLog' r) where
+    -- | Default severities for 'BracketLog' - the enclosing log message may of
+    -- course use different values.
+    getSeverityAnnotation = \case
+        BracketStart -> Debug
+        BracketFinish _ -> Debug
+        BracketException _ -> Error
+        BracketAsyncException _ -> Debug
+
+-- | Placeholder for some unspecified result value in 'BracketLog' - it could be
+-- @()@, or anything else.
+data SomeResult = SomeResult deriving (Generic, Show, Eq)
+
+instance Buildable SomeResult where
+    build SomeResult = mempty
+
+instance ToJSON SomeResult where
+    toJSON SomeResult = Null
+
+-- | Trace around an action, where the result doesn't matter.
+type BracketLog = BracketLog' SomeResult
+
 -- | Run a monadic action with 'BracketLog' traced around it.
 bracketTracer :: MonadUnliftIO m => Tracer m BracketLog -> m a -> m a
-bracketTracer tr action = do
+bracketTracer = bracketTracer'' id (const SomeResult)
+
+-- | Run a monadic action with 'BracketLog' traced around it.
+bracketTracer'
+    :: MonadUnliftIO m
+    => (r -> a)
+    -- ^ Transform value into log message.
+    -> Tracer m (BracketLog' a)
+    -- ^ Tracer.
+    -> m r
+    -- ^ Action.
+    -> m r
+bracketTracer' = bracketTracer'' id
+
+-- | Run a monadic action with 'BracketLog' traced around it.
+bracketTracer''
+    :: MonadUnliftIO m
+    => (b -> r)
+    -- ^ Transform value into result.
+    -> (b -> a)
+    -- ^ Transform value into log message.
+    -> Tracer m (BracketLog' a)
+    -- ^ Tracer.
+    -> m b
+    -- ^ Action to produce value.
+    -> m r
+bracketTracer'' res msg tr action = do
     traceWith tr BracketStart
     withException
-        (action <* traceWith tr BracketFinish)
+        (action >>= \val -> traceWith tr (BracketFinish (msg val)) $> res val)
         (traceWith tr . exceptionMsg)
 
-instance MonadIO m => Outcome m BracketLog where
-  type IntermediateValue BracketLog = AbsoluteTime
-  type OutcomeMetric BracketLog     = DiffTime
+instance MonadIO m => Outcome m (BracketLog' r) where
+  type IntermediateValue (BracketLog' r) = AbsoluteTime
+  type OutcomeMetric (BracketLog' r)     = DiffTime
 
   classifyObservable = pure . \case
       BracketStart -> OutcomeStarts
-      BracketFinish -> OutcomeEnds
+      BracketFinish _ -> OutcomeEnds
       BracketException _ -> OutcomeEnds
       BracketAsyncException _ -> OutcomeEnds
 
@@ -288,3 +355,40 @@ flatContramapTracer
 flatContramapTracer p tr = Tracer $ \a -> case p a of
      Just b -> runTracer tr b
      Nothing -> pure ()
+
+{-------------------------------------------------------------------------------
+                      Bracket logging convenience helpers
+-------------------------------------------------------------------------------}
+
+-- | Log around an 'ExceptT' action. The result of the action is captured as an
+-- 'Either' in the log message. Other unexpected exceptions are captured in the
+-- 'BracketLog''.
+resultTracer
+    :: MonadUnliftIO m
+    => Tracer m (BracketLog' (Either e r))
+    -> ExceptT e m r
+    -> ExceptT e m r
+resultTracer tr = ExceptT . bracketTracer' id tr . runExceptT
+
+formatResultMsg
+    :: (Show e, IsList t, Item t ~ (Text, v), Buildable v, Buildable r)
+    => Text
+    -- ^ Function name.
+    -> t
+    -- ^ Input parameters.
+    -> BracketLog' (Either e r)
+    -- ^ Logging around function.
+    -> Builder
+formatResultMsg title params b = nameF (build title) $ blockListF
+    [ nameF "inputs" (blockMapF params)
+    , buildBracketLog formatEither b
+    ]
+  where
+    formatEither = \case
+        Left e -> nameF "ERROR" (build $ show e)
+        Right r -> build r
+
+resultSeverity :: BracketLog' (Either e r) -> Severity
+resultSeverity = \case
+    BracketFinish (Left _) -> Error
+    msg -> getSeverityAnnotation msg
