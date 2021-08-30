@@ -511,6 +511,8 @@ import Data.Text.Class
     ( FromText (..), ToText (..) )
 import Data.Time
     ( UTCTime )
+import Data.Tuple.Extra
+    ( snd3 )
 import Data.Type.Equality
     ( type (==) )
 import Data.Word
@@ -2072,45 +2074,35 @@ constructTransaction ctx config (ApiT wid) body = do
             , txTimeToLive
             }
 
-    let transform = \s sel ->
-            W.assignChangeAddresses (genChange config) sel s
-            & uncurry (W.selectionToUnsignedTx txWithdrawal)
-
     withWorkerCtx ctx wid liftE liftE $ \wrk -> do
         -- fixme: Move this into Cardano.Wallet
         w <- liftHandler $ W.readWalletUTxOIndex @_ @s @k wrk wid
-        let getFee = const (selectionDelta TokenBundle.getCoin)
-        (sel, sel', fee) <- case (body ^. #payments) of
+        let getFee = selectionDelta (TokenBundle.getCoin . view #tokens)
+        sel <- case body ^. #payments of
             Nothing -> do
-                utx <- liftHandler
-                    $ W.selectAssetsNoOutputs @_ @s @k wrk wid w txCtx (const Prelude.id)
-                (FeeEstimation estMin _) <- liftHandler $
-                    W.estimateFee $ W.selectAssetsNoOutputs @_ @s @k wrk wid w txCtx getFee
-                sel <- liftHandler $
-                    W.assignChangeAddressesWithoutDbUpdate wrk wid (genChange config) utx
-                sel' <- liftHandler
-                    $ W.selectAssetsNoOutputs @_ @s @k wrk wid w txCtx transform
-                pure (sel, sel', estMin)
+                sel' <- liftHandler $
+                    W.selectAssetsNoOutputs @_ @s @k wrk wid w txCtx $
+                    const Prelude.id
+                liftHandler $
+                    W.assignChangeAddressesWithoutDbUpdate wrk wid (genChange config) sel'
 
             Just (ApiPaymentAddresses content) -> do
                 let outs = addressAmountToTxOut <$> content
-                utx <- liftHandler
-                    $ W.selectAssets  @_ @s @k wrk w txCtx outs (const Prelude.id)
-                (FeeEstimation estMin _) <- liftHandler $ W.estimateFee $ W.selectAssets @_ @s @k wrk w txCtx outs getFee
-                -- fixme: the fee can be calculated from the selection result
-                sel <- liftHandler $
-                    W.assignChangeAddressesWithoutDbUpdate wrk wid (genChange config) utx
-                sel' <- liftHandler
-                    $ W.selectAssets @_ @s @k wrk w txCtx outs transform
-                pure (sel, sel', estMin)
+                sel' <- liftHandler $
+                    W.selectAssets @_ @s @k wrk w txCtx outs $
+                    const Prelude.id
+                liftHandler $
+                    W.assignChangeAddressesWithoutDbUpdate wrk wid (genChange config) sel'
+
             Just (ApiPaymentAll _) -> do
                 liftHandler $ throwE $ ErrConstructTxNotImplemented "ADP-909"
 
         tx <- liftHandler $ W.constructTransaction @_ @k wrk txCtx sel
+        let utx = W.selectionToUnsignedTx txWithdrawal sel $ getState $ snd3 w
         pure $ ApiConstructTransaction
             { transaction = ApiT tx
-            , coinSelection = mkApiCoinSelection [] Nothing txMetadata sel'
-            , fee = Quantity $ fromIntegral fee
+            , coinSelection = mkApiCoinSelection [] Nothing txMetadata utx
+            , fee = coinToQuantity (getFee sel)
             }
   where
     ti :: TimeInterpreter (ExceptT PastHorizonException IO)
