@@ -79,12 +79,9 @@ import Cardano.Wallet.Primitive.Types.Tx
     , TxIn
     , TxMetadata
     , TxOut
-    , txOutCoin
     )
 import Data.Bifunctor
     ( Bifunctor (..) )
-import Data.ByteString
-    ( ByteString )
 import Data.List.NonEmpty
     ( NonEmpty )
 import Data.Text
@@ -95,8 +92,6 @@ import Fmt
     ( Buildable (..), blockMapF, genericF, listF' )
 import GHC.Generics
     ( Generic )
-
-import qualified Data.List.NonEmpty as NE
 
 data TransactionLayer k tx = TransactionLayer
     { mkTransactionBody
@@ -149,7 +144,8 @@ data TransactionLayer k tx = TransactionLayer
         :: ProtocolParameters
         -- Current protocol parameters.
         -> TxConstraints
-        -- The set of constraints that apply to all transactions.
+        -- ^ The set of constraints that apply to all transactions, given the
+        -- current protocol parameters.
 
     , decodeTx
         :: tx

@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE RecordWildCards #-}
 
 -- |
 -- Copyright: © 2021 IOHK
@@ -42,7 +43,7 @@ import Cardano.Wallet.Primitive.CoinSelection.Balance
 import Cardano.Wallet.Primitive.Types.Address
     ( Address )
 import Cardano.Wallet.Primitive.Types.Coin
-    ( Coin )
+    ( Coin, addCoin )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -94,7 +95,7 @@ performSelection
     => SelectionConstraints
     -> SelectionParams
     -> m (Either SelectionError (SelectionResult TokenBundle))
-performSelection selectionConstraints selectionParams =
+performSelection SelectionConstraints{..} SelectionParams{..} =
     -- TODO:
     --
     -- https://jira.iohk.io/browse/ADP-1037
@@ -103,7 +104,7 @@ performSelection selectionConstraints selectionParams =
     -- https://jira.iohk.io/browse/ADP-1070
     -- Adjust coin selection and fee estimation to handle pre-existing inputs
     --
-    case prepareOutputs selectionConstraints outputsToCover of
+    case prepareOutputs SelectionConstraints{..} outputsToCover of
         Left e ->
             pure $ Left $ SelectionOutputsError e
         Right preparedOutputsToCover ->
@@ -112,28 +113,12 @@ performSelection selectionConstraints selectionParams =
                 computeMinimumCost
                 assessTokenBundleSize
                 SelectionCriteria
-                    { assetsToBurn
-                    , assetsToMint
-                    , extraCoinSource = rewardWithdrawal
-                    , outputsToCover = preparedOutputsToCover
+                    { outputsToCover = preparedOutputsToCover
                     , selectionLimit =
                         computeSelectionLimit $ F.toList preparedOutputsToCover
-                    , utxoAvailable
-                    }
-  where
-    SelectionConstraints
-        { assessTokenBundleSize
-        , computeMinimumAdaQuantity
-        , computeMinimumCost
-        , computeSelectionLimit
-        } = selectionConstraints
-    SelectionParams
-        { assetsToBurn
-        , assetsToMint
-        , outputsToCover
-        , rewardWithdrawal
-        , utxoAvailable
-        } = selectionParams
+                    , extraCoinSource = Just $
+                        addCoin rewardWithdrawals certificateDepositsReturned
+                    , .. }
 
 -- | Specifies all constraints required for coin selection.
 --
@@ -178,12 +163,18 @@ data SelectionParams = SelectionParams
     , assetsToMint
         :: !TokenMap
         -- ^ Specifies a set of assets to mint.
+    , rewardWithdrawals
+        :: !Coin
+        -- ^ Specifies the value of a withdrawal from a reward account.
+    , certificateDepositsTaken
+        :: !Coin
+        -- ^ Amount of ada lodged in stake key registration deposits.
+    , certificateDepositsReturned
+        :: !Coin
+        -- ^ Amount of ada lodged in stake key registration deposits.
     , outputsToCover
         :: !(NonEmpty TxOut)
         -- ^ Specifies a set of outputs that must be paid for.
-    , rewardWithdrawal
-        :: !(Maybe Coin)
-        -- ^ Specifies the value of a withdrawal from a reward account.
     , utxoAvailable
         :: !UTxOIndex
         -- ^ Specifies the set of all available UTxO entries. The algorithm

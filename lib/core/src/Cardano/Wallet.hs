@@ -293,17 +293,19 @@ import Cardano.Wallet.Primitive.AddressDiscovery.Shared
     , addCosignerAccXPub
     , isShared
     )
-import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( ErrPrepareOutputs (..)
+import Cardano.Wallet.Primitive.CoinSelection
+    ( ErrPrepareOutputs
     , SelectionConstraints (..)
     , SelectionError (..)
     , SelectionParams (..)
-    , SelectionResult (..)
+    , performSelection
+    )
+import Cardano.Wallet.Primitive.CoinSelection.Balance
+    ( SelectionResult (..)
     , UnableToConstructChangeError (..)
     , emptySkeleton
     , makeSelectionReportDetailed
     , makeSelectionReportSummarized
-    , performSelection
     )
 import Cardano.Wallet.Primitive.Migration
     ( MigrationPlan (..) )
@@ -395,7 +397,6 @@ import Cardano.Wallet.Transaction
     , ErrCannotJoin (..)
     , ErrCannotQuit (..)
     , ErrMkTransaction
-    , ErrSelectionCriteria (..)
     , ErrSignTx (..)
     , SignTransactionKeyStore (..)
     , TransactionCtx (..)
@@ -1519,7 +1520,7 @@ selectAssets
 selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
     guardPendingWithdrawal
     pp <- liftIO $ currentProtocolParameters nl
-    liftIO $ traceWith tr $ MsgSelectionStart utxoAvailable outputs
+    traceWith tr $ MsgSelectionStart utxoAvailable txCtx outputs
     sel <- performSelection
         SelectionConstraints
             { assessTokenBundleSize =
@@ -1539,11 +1540,9 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
               assetsToBurn = TokenMap.empty
             , assetsToMint = TokenMap.empty
             , outputsToCover = outputs
-            , rewardWithdrawal = Just
-                $ addCoin (withdrawalToCoin $ view #txWithdrawal txCtx)
-                $ case view #txDelegationAction txCtx of
-                    Just Quit -> stakeKeyDeposit pp
-                    _ -> Coin 0
+            , rewardWithdrawals = withdrawalToCoin $ view #txWithdrawal txCtx
+            , certificateDepositsReturned = depositAmounts 1 pp delegs
+            , certificateDepositsTaken = depositAmounts (-1) pp delegs
             , utxoAvailable
             }
     traceWith tr $ MsgSelectionFinish False sel
@@ -1554,6 +1553,8 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
     nl = ctx ^. networkLayer
     tl = ctx ^. transactionLayer @k
     tr = natTracer liftIO $ contramap MsgWallet $ ctx ^. logger
+
+    delegs = view #txDelegationActions txCtx
 
     -- Ensure that there's no existing pending withdrawals. Indeed, a withdrawal
     -- is necessarily withdrawing rewards in their totality. So, after a first
@@ -1571,6 +1572,17 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
       where
         hasWithdrawal :: Tx -> Bool
         hasWithdrawal = not . null . withdrawals
+
+-- | Total amount that should be taken from/returned back to the wallet for
+-- stake key registrations/de-registrations in a transaction.
+--
+-- This will always be non-negative. The first parameter specifies the
+-- direction.
+depositAmounts :: Int -> ProtocolParameters -> [DelegationAction] -> Coin
+depositAmounts sig pp = sumCoins . map (delegationActionDeposit makeCoin)
+  where
+    Coin deposit = stakeKeyDeposit pp
+    makeCoin = Coin . (* deposit) . fromIntegral . (* (signum sig)) . max 0
 
 -- | Takes a transaction with a potentially incomplete witness set, and adds
 -- witnesses for all transaction inputs which the wallet can spend.

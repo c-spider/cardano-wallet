@@ -65,7 +65,7 @@ import Cardano.Wallet.Primitive.AddressDerivation.Icarus
     ( IcarusKey )
 import Cardano.Wallet.Primitive.AddressDerivation.Shelley
     ( ShelleyKey )
-import Cardano.Wallet.Primitive.CoinSelection.MA.RoundRobin
+import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionLimit (..)
     , SelectionResult (changeGenerated, inputsSelected, outputsCovered)
     , SelectionSkeleton (..)
@@ -76,7 +76,7 @@ import Cardano.Wallet.Primitive.Types
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
-    ( Coin (..), addCoin, coinToInteger, sumCoins )
+    ( Coin (..), coinToInteger )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -119,9 +119,6 @@ import Cardano.Wallet.Transaction
     ( DecryptedSigningKey (..)
     , DelegationAction (..)
     , ErrMkTransaction (..)
-    , ErrOutputTokenBundleSizeExceedsLimit (..)
-    , ErrOutputTokenQuantityExceedsLimit (..)
-    , ErrSelectionCriteria (..)
     , SignTransactionKeyStore (..)
     , SignTransactionResult (..)
     , TransactionCtx (..)
@@ -140,7 +137,7 @@ import Data.Bifunctor
 import Data.Function
     ( (&) )
 import Data.Generics.Internal.VL.Lens
-    ( view )
+    ( view, (^.) )
 import Data.Generics.Labels
     ()
 import Data.Kind
@@ -170,7 +167,6 @@ import qualified Codec.CBOR.Encoding as CBOR
 import qualified Codec.CBOR.Write as CBOR
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
-import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 
 data TxWitnessTag
@@ -313,10 +309,9 @@ newTransactionLayer networkId = TransactionLayer
         estimateTxCost pp $
         mkTxSkeleton (txWitnessTagFor @k) ctx skeleton
 
-    , computeSelectionLimit = \pp ctx outputsToCover ->
-        let txMaxSize = getTxMaxSize $ txParameters pp in
-        MaximumInputLimit $
-            _estimateMaxNumberOfInputs @k txMaxSize ctx outputsToCover
+    , computeSelectionLimit = \pp ctx outputsToCover -> MaximumInputLimit $
+        let txMaxSize = pp ^. #txParameters . #getTxMaxSize
+        in _estimateMaxNumberOfInputs @k txMaxSize ctx outputsToCover
 
     , tokenBundleSizeAssessor =
         Compatibility.tokenBundleSizeAssessor
@@ -447,16 +442,6 @@ _estimateMaxNumberOfInputs txMaxSize ctx outs =
         TxSize size = estimateTxSize $ mkTxSkeleton
             (txWitnessTagFor @k) ctx sel
         sel  = dummySkeleton (fromIntegral nInps) outs
-
--- | Get the sum of deposits returned from the given delegation actions.
---
--- This will always be non-negative. Deposits taken are not included in the
--- total.
-returnedDeposits :: ProtocolParameters -> [DelegationAction] -> Coin
-returnedDeposits pp = sumCoins . map (delegationActionDeposit makeCoin)
-  where
-    Coin deposit = stakeKeyDeposit pp
-    makeCoin = Coin . (* deposit) . fromIntegral . max (0 :: Int)
 
 dummySkeleton :: Int -> [TxOut] -> SelectionSkeleton
 dummySkeleton inputCount outputs = SelectionSkeleton
