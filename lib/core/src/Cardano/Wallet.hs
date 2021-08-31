@@ -1417,7 +1417,8 @@ selectAssetsNoOutputs ctx wid wal tx transform = do
     -- result. The resulting selection will therefore have a delta that is at
     -- least the size of the deposit (in practice, slightly bigger because this
     -- extra outputs also increases the apparent minimum fee).
-    deposit <- calcMinimumDeposit @_ @s @k ctx wid
+    deposit <- withExceptT ErrSelectAssetsNoSuchWallet $
+        calcMinimumDeposit @_ @s @k ctx wid
     let dummyAddress = Address ""
     let dummyOutput  = TxOut dummyAddress (TokenBundle.fromCoin deposit)
     let outs = dummyOutput :| []
@@ -2128,6 +2129,24 @@ migrationPlanToSelectionWithdrawals plan rewardWithdrawal outputAddressesToCycle
                                   Delegation
 -------------------------------------------------------------------------------}
 
+-- | Return the delegation actions necessary (if any) to ensure that the
+-- wallet's stake key is registered.
+maybeRegisterStakeKey
+    :: forall ctx s k.
+        ( HasDBLayer IO s k ctx
+        , HasLogger WalletWorkerLog ctx
+        )
+    => ctx
+    -> WalletId
+    -> ExceptT ErrNoSuchWallet IO [DelegationAction]
+maybeRegisterStakeKey ctx wid = db & \DBLayer{..} -> do
+    isKeyReg <- mapExceptT atomically $ isStakeKeyRegistered wid
+    liftIO $ traceWith tr $ MsgIsStakeKeyRegistered isKeyReg
+    pure [RegisterKey | not isKeyReg]
+  where
+    db = ctx ^. dbLayer @IO @s @k
+    tr = contramap MsgWallet $ ctx ^. logger
+
 joinStakePool
     :: forall ctx s k.
         ( HasDBLayer IO s k ctx
@@ -2142,13 +2161,12 @@ joinStakePool
     -> ExceptT ErrStakePoolDelegation IO (NonEmpty DelegationAction)
 joinStakePool ctx currentEpoch knownPools pid poolStatus wid =
     db & \DBLayer{..} -> do
-        (walMeta, isKeyReg) <- mapExceptT atomically $ do
-            walMeta <- withExceptT ErrStakePoolDelegationNoSuchWallet
+        walMeta <- mapExceptT atomically $
+            withExceptT ErrStakePoolDelegationNoSuchWallet
                 $ withNoSuchWallet wid
                 $ readWalletMeta wid
-            isKeyReg <- withExceptT ErrStakePoolDelegationNoSuchWallet
-                $ isStakeKeyRegistered wid
-            pure (walMeta, isKeyReg)
+        regActions <- withExceptT ErrStakePoolDelegationNoSuchWallet $
+            maybeRegisterStakeKey @ctx @s @k ctx wid
 
         let mRetirementEpoch = view #retirementEpoch <$>
                 W.getPoolRetirementCertificate poolStatus
@@ -2158,12 +2176,9 @@ joinStakePool ctx currentEpoch knownPools pid poolStatus wid =
         withExceptT ErrStakePoolJoin $ except $
             guardJoin knownPools (walMeta ^. #delegation) pid retirementInfo
 
-        liftIO $ traceWith tr $ MsgIsStakeKeyRegistered isKeyReg
-
-        pure $ NE.reverse $ Delegate pid :| [RegisterKey | not isKeyReg]
+        pure $ NE.reverse $ Delegate pid :| regActions
   where
     db = ctx ^. dbLayer @IO @s @k
-    tr = contramap MsgWallet $ ctx ^. logger
 
 -- | Helper function to factor necessary logic for quitting a stake pool.
 quitStakePool
@@ -2240,20 +2255,14 @@ calcMinimumDeposit
     :: forall ctx s k.
         ( HasDBLayer IO s k ctx
         , HasNetworkLayer IO ctx
+        , HasLogger WalletWorkerLog ctx
         )
     => ctx
     -> WalletId
-    -> ExceptT ErrSelectAssets IO Coin
-calcMinimumDeposit ctx wid = db & \DBLayer{..} ->
-    withExceptT ErrSelectAssetsNoSuchWallet $ do
-        mapExceptT atomically (isStakeKeyRegistered wid) >>= \case
-            True ->
-                pure $ Coin 0
-            False ->
-                liftIO $ stakeKeyDeposit <$> currentProtocolParameters nl
-  where
-    db = ctx ^. dbLayer @IO @s @k
-    nl = ctx ^. networkLayer
+    -> ExceptT ErrNoSuchWallet IO Coin
+calcMinimumDeposit ctx wid = depositAmounts (-1)
+    <$> liftIO (currentProtocolParameters (ctx ^. networkLayer))
+    <*> maybeRegisterStakeKey @ctx @s @k ctx wid
 
 -- | Estimate the transaction fee for a given coin selection algorithm by
 -- repeatedly running it (100 times) and collecting the results. In the returned

@@ -151,7 +151,7 @@ data TransactionLayer k tx = TransactionLayer
     }
     deriving Generic
 
--- | Use coin selection to provide resolved inputs of transaction.
+-- | Use coin selection result to provide resolved inputs of transaction.
 addResolvedInputs :: SelectionResult change -> Tx -> Tx
 addResolvedInputs cs tx = tx
     { resolvedInputs = fmap txOutCoin <$> NE.toList (inputsSelected cs) }

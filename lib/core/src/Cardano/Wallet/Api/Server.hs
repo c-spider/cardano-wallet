@@ -2220,18 +2220,16 @@ delegationFee
     -> ApiT WalletId
     -> Handler ApiFee
 delegationFee ctx (ApiT wid) = do
-    withWorkerCtx ctx wid liftE liftE $ \wrk -> liftHandler $ do
-        w <- withExceptT ErrSelectAssetsNoSuchWallet $
-            W.readWalletUTxOIndex @_ @s @k wrk wid
-        deposit <- W.calcMinimumDeposit @_ @s @k wrk wid
-        mkApiFee (Just deposit) [] <$> W.estimateFee (runSelection wrk deposit w)
+    withWorkerCtx ctx wid liftE liftE $ \wrk -> do
+        w <- liftHandler $ W.readWalletUTxOIndex @_ @s @k wrk wid
+        deposit <- liftHandler $ W.calcMinimumDeposit @_ @s @k wrk wid
+        fee <- liftHandler $ W.estimateFee (runSelection wrk deposit w)
+        pure $ mkApiFee (Just deposit) [] fee
   where
-    txCtx :: TransactionCtx
-    txCtx = defaultTransactionCtx
-
     runSelection wrk deposit wal =
         W.selectAssetsNoOutputs @_ @s @k wrk wid wal txCtx calcFee
       where
+        txCtx = defaultTransactionCtx
         calcFee _ = Coin.distance deposit . selectionDelta TokenBundle.getCoin
 
 quitStakePool
