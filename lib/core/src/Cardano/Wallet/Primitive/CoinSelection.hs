@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
 
@@ -35,7 +36,7 @@ import Prelude
 
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionCriteria (..)
-    , SelectionLimit
+    , SelectionLimit (..)
     , SelectionResult
     , SelectionSkeleton
     )
@@ -52,21 +53,28 @@ import Cardano.Wallet.Primitive.Types.TokenQuantity
 import Cardano.Wallet.Primitive.Types.Tx
     ( TokenBundleSizeAssessment (..)
     , TokenBundleSizeAssessor (..)
+    , TxIn
     , TxOut
     , txOutMaxTokenQuantity
     )
+import Cardano.Wallet.Primitive.Types.UTxO
+    ( UTxO (..) )
 import Cardano.Wallet.Primitive.Types.UTxOIndex
     ( UTxOIndex )
 import Control.Monad.Random.Class
     ( MonadRandom )
 import Data.Bifunctor
     ( first )
+import Data.Function
+    ( (&) )
 import Data.Generics.Internal.VL.Lens
-    ( view )
+    ( over, view )
 import Data.Generics.Labels
     ()
 import Data.List.NonEmpty
     ( NonEmpty (..) )
+import Data.Maybe
+    ( fromMaybe )
 import Data.Word
     ( Word16 )
 import GHC.Generics
@@ -77,7 +85,10 @@ import GHC.Stack
 import qualified Cardano.Wallet.Primitive.CoinSelection.Balance as Balance
 import qualified Cardano.Wallet.Primitive.Types.TokenBundle as TokenBundle
 import qualified Cardano.Wallet.Primitive.Types.TokenMap as TokenMap
+import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
+import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Data.Foldable as F
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 -- | Performs a coin selection.
@@ -90,11 +101,14 @@ import qualified Data.Set as Set
 --  - balancing a selection to pay for the transaction fee.
 --
 performSelection
-    :: (HasCallStack, MonadRandom m)
-    => SelectionConstraints
-    -> SelectionParams
-    -> m (Either SelectionError (SelectionResult TokenBundle))
-performSelection selectionConstraints selectionParams =
+    :: (HasCallStack, MonadRandom m) => PerformSelection m TokenBundle
+performSelection =
+    accountForExistingInputs
+        performSelectionInner
+
+performSelectionInner
+    :: (HasCallStack, MonadRandom m) => PerformSelection m TokenBundle
+performSelectionInner selectionConstraints selectionParams =
     -- TODO:
     --
     -- https://jira.iohk.io/browse/ADP-1037
@@ -135,6 +149,11 @@ performSelection selectionConstraints selectionParams =
         , utxoAvailable
         } = selectionParams
 
+type PerformSelection m change =
+    SelectionConstraints ->
+    SelectionParams ->
+    m (Either SelectionError (SelectionResult change))
+
 -- | Specifies all constraints required for coin selection.
 --
 -- Selection constraints:
@@ -168,6 +187,7 @@ data SelectionConstraints = SelectionConstraints
         -- ^ Specifies an inclusive upper bound on the number of unique inputs
         -- that can be selected as collateral.
     }
+    deriving Generic
 
 -- | Specifies all parameters that are specific to a given selection.
 --
@@ -178,6 +198,9 @@ data SelectionParams = SelectionParams
     , assetsToMint
         :: !TokenMap
         -- ^ Specifies a set of assets to mint.
+    , existingInputs
+        :: !UTxO
+        -- ^ Specifies a set of existing inputs to include.
     , outputsToCover
         :: !(NonEmpty TxOut)
         -- ^ Specifies a set of outputs that must be paid for.
@@ -198,6 +221,88 @@ data SelectionError
     = SelectionBalanceError Balance.SelectionError
     | SelectionOutputsError ErrPrepareOutputs
     deriving (Eq, Show)
+
+accountForExistingInputs
+    :: Functor m
+    => PerformSelection m change
+    -> PerformSelection m change
+accountForExistingInputs performSelectionFn constraints params =
+    fmap modifyResult <$> performSelectionFn
+        (modifyConstraints constraints)
+        (modifyParams params)
+  where
+    modifyConstraints :: SelectionConstraints -> SelectionConstraints
+    modifyConstraints
+        = over #computeMinimumCost
+            modifyComputeMinimumCost
+        . over #computeSelectionLimit
+            modifyComputeSelectionLimit
+      where
+        modifyComputeMinimumCost
+            :: (SelectionSkeleton -> Coin)
+            -> (SelectionSkeleton -> Coin)
+        modifyComputeMinimumCost = (. modifySkeleton)
+          where
+            modifySkeleton :: SelectionSkeleton -> SelectionSkeleton
+            modifySkeleton =
+                over #skeletonInputCount (+ UTxO.size existingInputs)
+
+        modifyComputeSelectionLimit
+            :: ([TxOut] -> SelectionLimit)
+            -> ([TxOut] -> SelectionLimit)
+        modifyComputeSelectionLimit = (modifySelectionLimit .)
+          where
+            modifySelectionLimit :: SelectionLimit -> SelectionLimit
+            modifySelectionLimit = \case
+                NoLimit ->
+                    NoLimit
+                MaximumInputLimit m ->
+                    MaximumInputLimit $ m - UTxO.size existingInputs
+
+    modifyParams :: SelectionParams -> SelectionParams
+    modifyParams
+        = over #assetsToMint
+            modifyAssetsToMint
+        . over #rewardWithdrawal
+            modifyRewardWithdrawal
+        . over #utxoAvailable
+            modifyUTxOAvailable
+      where
+        modifyAssetsToMint :: TokenMap -> TokenMap
+        modifyAssetsToMint = TokenMap.add (view #tokens existingInputValue)
+
+        modifyRewardWithdrawal :: Maybe Coin -> Maybe Coin
+        modifyRewardWithdrawal =
+            Just . (view #coin existingInputValue <>) . fromMaybe mempty
+
+        modifyUTxOAvailable :: UTxOIndex -> UTxOIndex
+        modifyUTxOAvailable = UTxOIndex.deleteMany $ UTxO.dom existingInputs
+
+    modifyResult :: SelectionResult change -> SelectionResult change
+    modifyResult
+        = over #inputsSelected
+            modifyInputsSelected
+        . over #extraCoinSource
+            modifyExtraCoinSource
+      where
+        modifyInputsSelected
+            :: (NonEmpty (TxIn, TxOut)) -> (NonEmpty (TxIn, TxOut))
+        modifyInputsSelected =
+            (consManyNE $ Map.toList $ unUTxO existingInputs)
+
+        modifyExtraCoinSource :: Maybe Coin -> Maybe Coin
+        modifyExtraCoinSource = const (view #rewardWithdrawal params)
+
+    SelectionParams {existingInputs} = params
+
+    existingInputValue :: TokenBundle
+    existingInputValue = existingInputs
+        & unUTxO
+        & fmap (view #tokens)
+        & F.fold
+
+    consManyNE :: [a] -> NonEmpty a -> NonEmpty a
+    consManyNE = undefined
 
 -- | Prepares the given user-specified outputs, ensuring that they are valid.
 --

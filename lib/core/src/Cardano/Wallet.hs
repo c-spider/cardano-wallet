@@ -500,6 +500,7 @@ import qualified Cardano.Wallet.Primitive.Types as W
 import qualified Cardano.Wallet.Primitive.Types.Coin as Coin
 import qualified Cardano.Wallet.Primitive.Types.TokenBundle as TokenBundle
 import qualified Cardano.Wallet.Primitive.Types.TokenMap as TokenMap
+import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 import qualified Data.ByteArray as BA
 import qualified Data.Foldable as F
@@ -1518,6 +1519,8 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
             { -- Until we properly support minting and burning, set to empty:
               assetsToBurn = TokenMap.empty
             , assetsToMint = TokenMap.empty
+              -- Until we properly support pre-existing inputs, set to empty:
+            , existingInputs = UTxO.empty
             , outputsToCover = outputs
             , rewardWithdrawal = Just
                 $ addCoin (withdrawalToCoin $ view #txWithdrawal txCtx)
