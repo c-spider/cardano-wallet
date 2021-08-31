@@ -120,7 +120,7 @@ data TransactionLayer k tx = TransactionLayer
         -> tx
             -- serialized unsigned transaction
         -> SignTransactionResult (k 'AddressK XPrv) XPrv () tx
-        -- ^ Sign a transaction
+        -- ^ Sign a transaction using the given key store.
 
     , calcMinimumCost
         :: ProtocolParameters
@@ -139,21 +139,15 @@ data TransactionLayer k tx = TransactionLayer
         -> [TxOut]
         -> SelectionLimit
 
-    , tokenBundleSizeAssessor
-        :: TokenBundleMaxSize -> TokenBundleSizeAssessor
-        -- ^ A function to assess the size of a token bundle.
+    , tokenBundleSizeAssessor :: TokenBundleMaxSize -> TokenBundleSizeAssessor
+    -- ^ A function to assess the size of a token bundle.
 
-    , constraints
-        :: ProtocolParameters
-        -- Current protocol parameters.
-        -> TxConstraints
-        -- ^ The set of constraints that apply to all transactions, given the
-        -- current protocol parameters.
+    , constraints :: ProtocolParameters -> TxConstraints
+    -- ^ The set of constraints that apply to all transactions, given the
+    -- current protocol parameters.
 
-    , decodeTx
-        :: tx
-        -> Tx
-        -- ^ Decode an externally-signed transaction to the chain producer
+    , decodeTx :: tx -> Tx
+    -- ^ Decode an externally-created transaction.
     }
     deriving Generic
 
