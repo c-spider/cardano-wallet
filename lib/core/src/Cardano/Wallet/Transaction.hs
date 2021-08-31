@@ -56,7 +56,7 @@ import Cardano.Api
 import Cardano.Wallet.Primitive.AddressDerivation
     ( Depth (..), DerivationIndex, Passphrase )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionLimit, SelectionResult, SelectionSkeleton )
+    ( SelectionLimit, SelectionResult (..), SelectionSkeleton )
 import Cardano.Wallet.Primitive.Slotting
     ( PastHorizonException )
 import Cardano.Wallet.Primitive.Types
@@ -79,6 +79,7 @@ import Cardano.Wallet.Primitive.Types.Tx
     , TxIn
     , TxMetadata
     , TxOut
+    , txOutCoin
     )
 import Data.Bifunctor
     ( Bifunctor (..) )
@@ -92,6 +93,8 @@ import Fmt
     ( Buildable (..), blockMapF, genericF, listF' )
 import GHC.Generics
     ( Generic )
+
+import qualified Data.List.NonEmpty as NE
 
 data TransactionLayer k tx = TransactionLayer
     { mkTransactionBody
