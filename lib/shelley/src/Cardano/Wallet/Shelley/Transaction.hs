@@ -303,7 +303,8 @@ newTransactionLayer
     -> TransactionLayer k SealedTx
 newTransactionLayer networkId = TransactionLayer
     { mkTransactionBody = _mkTransactionBody networkId
-    , mkSignedTransaction = \keyStore -> first (const ()) . _mkSignedTransaction networkId keyStore
+    , mkSignedTransaction = \keyStore ->
+        first (const ()) . _mkSignedTransaction networkId keyStore
 
     , calcMinimumCost = \pp ctx skeleton ->
         estimateTxCost pp $
@@ -313,8 +314,7 @@ newTransactionLayer networkId = TransactionLayer
         let txMaxSize = pp ^. #txParameters . #getTxMaxSize
         in _estimateMaxNumberOfInputs @k txMaxSize ctx outputsToCover
 
-    , tokenBundleSizeAssessor =
-        Compatibility.tokenBundleSizeAssessor
+    , tokenBundleSizeAssessor = Compatibility.tokenBundleSizeAssessor
 
     , constraints = \pp -> txConstraints pp (txWitnessTagFor @k)
 
