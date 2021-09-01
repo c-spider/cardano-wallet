@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -15,8 +16,7 @@ import Cardano.Wallet.Primitive.CoinSelection
     , accountForExistingInputs
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionResult (..)
-    )
+    ( SelectionResult (..) )
 import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn, TxOut )
 import Cardano.Wallet.Primitive.Types.Tx.Gen
@@ -40,12 +40,22 @@ import Data.List.NonEmpty
 import Test.Hspec
     ( Spec, describe, it )
 import Test.QuickCheck
-    ( Arbitrary (..), Property, checkCoverage, conjoin, cover, genericShrink, property )
+    ( Arbitrary (..)
+    , Property
+    , checkCoverage
+    , conjoin
+    , cover
+    , genericShrink
+    , property
+    , suchThat
+    )
 
+import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
+import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 import qualified Data.Foldable as F
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 
 spec :: Spec
 spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
@@ -57,17 +67,26 @@ spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
             property prop_accountForExistingInputs_utxoAvailable
 
 prop_accountForExistingInputs_inputsSelected
-    :: UTxO -> NonEmpty (TxIn, TxOut) -> Property
-prop_accountForExistingInputs_inputsSelected existingInputs inputsSelected =
-    -- add coverage check
-    conjoin
-        [ unUTxO existingInputs `Map.isSubmapOf`
-            Map.fromList (F.toList inputsSelected')
-        ]
+    :: UTxO -> NotNull UTxO -> Property
+prop_accountForExistingInputs_inputsSelected
+    existingInputs' (NotNull inputsSelected) =
+        checkCoverage $
+        cover 10
+            (existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty)
+            "existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty" $
+        conjoin
+            [ dom existingInputs `Set.disjoint`   dom inputsSelected
+            , dom existingInputs `Set.isSubsetOf` dom inputsSelected'
+            ]
   where
-    inputsSelected' :: NonEmpty (TxIn, TxOut)
+    existingInputs :: UTxO
+    existingInputs = existingInputs' `UTxO.excluding` dom inputsSelected
+
+    inputsSelected' :: UTxO
     inputsSelected'
-        = either (error "unexpected Left") (view #inputsSelected)
+        = either
+            (error "unexpected Left")
+            (UTxO . Map.fromList . F.toList . view #inputsSelected)
         $ runIdentity
         $ accountForExistingInputs
             performSelectionFn
@@ -76,7 +95,10 @@ prop_accountForExistingInputs_inputsSelected existingInputs inputsSelected =
       where
         performSelectionFn :: PerformSelection Identity change
         performSelectionFn _constraints _params =
-            Identity $ Right emptySelectionResult {inputsSelected}
+            Identity $ Right emptySelectionResult
+                { inputsSelected =
+                    NE.fromList $ Map.toList $ unUTxO inputsSelected
+                }
 
 prop_accountForExistingInputs_utxoAvailable :: UTxO -> UTxO -> Property
 prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
@@ -175,6 +197,13 @@ instance Arbitrary TxOut where
 instance Arbitrary UTxO where
     arbitrary = genUTxO
     shrink = shrinkUTxO
+
+newtype NotNull a = NotNull { unNotNull :: a }
+    deriving (Eq, Show)
+
+instance Arbitrary (NotNull UTxO) where
+    arbitrary = NotNull <$> genUTxO `suchThat` (not . UTxO.null)
+    shrink (NotNull u) = NotNull <$> filter (not . UTxO.null) (shrinkUTxO u)
 
 instance Arbitrary UTxOIndex where
     arbitrary = genUTxOIndex
