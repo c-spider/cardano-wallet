@@ -244,13 +244,13 @@ data SelectionLimit
 --
 data SelectionResult change = SelectionResult
     { inputsSelected
-        :: !(NonEmpty (TxIn, TxOut))
+        :: (NonEmpty (TxIn, TxOut))
         -- ^ A (non-empty) list of inputs selected from 'utxoAvailable'.
     , extraCoinSource
-        :: !(Maybe Coin)
+        :: (Maybe Coin)
         -- ^ An optional extra source of ada.
     , outputsCovered
-        :: ![TxOut]
+        :: [TxOut]
         -- ^ A list of outputs covered.
         -- FIXME: Left as a list to allow to work-around the limitation of
         -- 'performSelection' which cannot run for no output targets (e.g. in
@@ -261,10 +261,10 @@ data SelectionResult change = SelectionResult
         -- of writing these lines, I've already been yak-shaving for a while and
         -- this is the last remaining obstacle, not worth the effort _yet_.
     , changeGenerated
-        :: ![change]
+        :: [change]
         -- ^ A list of generated change outputs.
     , utxoRemaining
-        :: !UTxOIndex
+        :: UTxOIndex
         -- ^ The subset of 'utxoAvailable' that remains after performing
         -- the selection.
     }

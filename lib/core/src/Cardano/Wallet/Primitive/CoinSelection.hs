@@ -22,9 +22,12 @@
 --
 module Cardano.Wallet.Primitive.CoinSelection
     ( performSelection
+    , PerformSelection
     , SelectionConstraints (..)
     , SelectionParams (..)
     , SelectionError (..)
+
+    , accountForExistingInputs
 
     , prepareOutputs
     , ErrPrepareOutputs (..)
@@ -88,6 +91,7 @@ import qualified Cardano.Wallet.Primitive.Types.TokenMap as TokenMap
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Data.Foldable as F
+import qualified Data.List.NonEmpty.Extra as NE
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
@@ -193,22 +197,22 @@ data SelectionConstraints = SelectionConstraints
 --
 data SelectionParams = SelectionParams
     { assetsToBurn
-        :: !TokenMap
+        :: TokenMap
         -- ^ Specifies a set of assets to burn.
     , assetsToMint
-        :: !TokenMap
+        :: TokenMap
         -- ^ Specifies a set of assets to mint.
     , existingInputs
-        :: !UTxO
+        :: UTxO
         -- ^ Specifies a set of existing inputs to include.
     , outputsToCover
-        :: !(NonEmpty TxOut)
+        :: (NonEmpty TxOut)
         -- ^ Specifies a set of outputs that must be paid for.
     , rewardWithdrawal
-        :: !(Maybe Coin)
+        :: (Maybe Coin)
         -- ^ Specifies the value of a withdrawal from a reward account.
     , utxoAvailable
-        :: !UTxOIndex
+        :: UTxOIndex
         -- ^ Specifies the set of all available UTxO entries. The algorithm
         -- will choose entries from this set when selecting ordinary inputs
         -- and collateral inputs.
@@ -288,7 +292,7 @@ accountForExistingInputs performSelectionFn constraints params =
         modifyInputsSelected
             :: (NonEmpty (TxIn, TxOut)) -> (NonEmpty (TxIn, TxOut))
         modifyInputsSelected =
-            (consManyNE $ Map.toList $ unUTxO existingInputs)
+            (NE.appendr $ Map.toList $ unUTxO existingInputs)
 
         modifyExtraCoinSource :: Maybe Coin -> Maybe Coin
         modifyExtraCoinSource = const (view #rewardWithdrawal params)
@@ -300,9 +304,6 @@ accountForExistingInputs performSelectionFn constraints params =
         & unUTxO
         & fmap (view #tokens)
         & F.fold
-
-    consManyNE :: [a] -> NonEmpty a -> NonEmpty a
-    consManyNE = undefined
 
 -- | Prepares the given user-specified outputs, ensuring that they are valid.
 --
