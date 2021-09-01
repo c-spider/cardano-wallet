@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -16,7 +17,13 @@ import Cardano.Wallet.Primitive.CoinSelection
     , accountForExistingInputs
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionResult (..) )
+    ( SelectionLimit (..), SelectionResult (..), SelectionSkeleton (..) )
+import Cardano.Wallet.Primitive.Types.Coin
+    ( Coin (..) )
+import Cardano.Wallet.Primitive.Types.TokenMap
+    ( AssetId )
+import Cardano.Wallet.Primitive.Types.TokenMap.Gen
+    ( genAssetId, shrinkAssetId )
 import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn, TxOut )
 import Cardano.Wallet.Primitive.Types.Tx.Gen
@@ -29,26 +36,36 @@ import Cardano.Wallet.Primitive.Types.UTxOIndex
     ( UTxOIndex )
 import Cardano.Wallet.Primitive.Types.UTxOIndex.Gen
     ( genUTxOIndex, shrinkUTxOIndex )
+import Data.Function
+    ( (&) )
 import Data.Functor.Identity
     ( Identity (..) )
 import Data.Generics.Internal.VL.Lens
-    ( view )
+    ( over, view )
 import Data.Generics.Labels
     ()
 import Data.List.NonEmpty
     ( NonEmpty (..) )
+import Data.Set
+    ( Set )
 import Test.Hspec
     ( Spec, describe, it )
 import Test.QuickCheck
     ( Arbitrary (..)
+    , Gen
+    , NonNegative (..)
     , Property
     , checkCoverage
     , conjoin
     , cover
     , genericShrink
+    , oneof
     , property
-    , suchThat
+    , shrinkMapBy
+    , (===)
     )
+import Test.QuickCheck.Extra
+    ( NotNull (..), liftShrink3 )
 
 import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
@@ -63,6 +80,10 @@ spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
     describe "accountForExistingInputs" $ do
         it "prop_accountForExistingInputs_inputsSelected" $
             property prop_accountForExistingInputs_inputsSelected
+        it "prop_accountForExistingInputs_minimumCost" $
+            property prop_accountForExistingInputs_minimumCost
+        it "prop_accountForExistingInputs_selectionLimit" $
+            property prop_accountForExistingInputs_selectionLimit
         it "prop_accountForExistingInputs_utxoAvailable" $
             property prop_accountForExistingInputs_utxoAvailable
 
@@ -91,12 +112,64 @@ prop_accountForExistingInputs_inputsSelected
             emptySelectionConstraints
             emptySelectionParams {existingInputs}
       where
-        performSelectionFn :: PerformSelection Identity change
+        performSelectionFn :: PerformSelection Identity ()
         performSelectionFn _constraints _params =
             Identity $ Right emptySelectionResult
                 { inputsSelected =
                     NE.fromList $ Map.toList $ unUTxO inputsSelected
                 }
+
+prop_accountForExistingInputs_minimumCost
+    :: UTxO -> SelectionSkeleton -> Property
+prop_accountForExistingInputs_minimumCost existingInputs skeleton =
+    checkCoverage $
+    cover 10
+        (computeMinimumCost skeleton < computeMinimumCost' skeleton)
+        "computeMinimumCost skeleton < computeMinimumCost' skeleton" $
+    conjoin
+        [ computeMinimumCost
+            (skeleton & over #skeletonInputCount (+ UTxO.size existingInputs))
+            ==
+            computeMinimumCost' skeleton
+        , computeMinimumCost skeleton <= computeMinimumCost' skeleton
+        ]
+  where
+    computeMinimumCost :: SelectionSkeleton -> Coin
+    computeMinimumCost = Coin . fromIntegral . length . show
+
+    computeMinimumCost' :: SelectionSkeleton -> Coin
+    computeMinimumCost' = runReport $ accountForExistingInputs
+        performSelectionFn
+        emptySelectionConstraints {computeMinimumCost}
+        emptySelectionParams {existingInputs}
+      where
+        performSelectionFn
+            :: PerformSelection (Report (SelectionSkeleton -> Coin)) ()
+        performSelectionFn constraints _params =
+            Report $ view #computeMinimumCost constraints
+
+-- TODO: do something similar to minimumCost (with the function)
+prop_accountForExistingInputs_selectionLimit
+    :: UTxO -> SelectionLimit -> Property
+prop_accountForExistingInputs_selectionLimit existingInputs selectionLimit =
+    checkCoverage $
+    cover 10 (selectionLimit == NoLimit) "selectionLimit == NoLimit" $
+    cover 10 (selectionLimit /= NoLimit) "selectionLimit /= NoLimit" $
+    selectionLimit' === case selectionLimit of
+        NoLimit ->
+            NoLimit
+        MaximumInputLimit n ->
+            MaximumInputLimit (n - UTxO.size existingInputs)
+  where
+    selectionLimit' :: SelectionLimit
+    selectionLimit' = runReport $ accountForExistingInputs
+        performSelectionFn
+        emptySelectionConstraints {computeSelectionLimit = const selectionLimit}
+        emptySelectionParams {existingInputs}
+      where
+        performSelectionFn :: PerformSelection (Report SelectionLimit) ()
+        performSelectionFn constraints _params =
+            Report $ view #computeSelectionLimit constraints []
 
 prop_accountForExistingInputs_utxoAvailable :: UTxO -> UTxO -> Property
 prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
@@ -111,20 +184,21 @@ prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
         ]
   where
     utxoAvailable' :: UTxO
-    utxoAvailable'
-        = UTxOIndex.toUTxO
-        $ fst
-        $ accountForExistingInputs
-            performSelectionFn
-            emptySelectionConstraints
-            emptySelectionParams
-                { utxoAvailable = UTxOIndex.fromUTxO utxoAvailable
-                , existingInputs
-                }
+    utxoAvailable' = UTxOIndex.toUTxO $ runReport $ accountForExistingInputs
+        performSelectionFn
+        emptySelectionConstraints
+        emptySelectionParams
+            { utxoAvailable = UTxOIndex.fromUTxO utxoAvailable
+            , existingInputs
+            }
       where
-        performSelectionFn :: PerformSelection ((,) UTxOIndex) change
+        performSelectionFn :: PerformSelection (Report UTxOIndex) ()
         performSelectionFn _constraints params =
-            (view #utxoAvailable params, Right emptySelectionResult)
+            Report $ view #utxoAvailable params
+
+--------------------------------------------------------------------------------
+-- Empty values
+--------------------------------------------------------------------------------
 
 emptySelectionConstraints :: SelectionConstraints
 emptySelectionConstraints = SelectionConstraints
@@ -180,20 +254,65 @@ shouldNotEvaluateFor :: String -> String -> a
 shouldNotEvaluateFor contextName fieldName = error $ unwords
     [fieldName, "was unexpectedly evaluated in", contextName]
 
-expectRight :: (b -> c) -> Either a b -> c
-expectRight f (Right b) = f b
-expectRight _ (Left  _) = error "unexpected Left"
+--------------------------------------------------------------------------------
+-- Generators and shrinkers
+--------------------------------------------------------------------------------
+
+genSelectionLimit :: Gen SelectionLimit
+genSelectionLimit = oneof
+    [ MaximumInputLimit . getNonNegative <$> arbitrary
+    , pure NoLimit
+    ]
+
+shrinkSelectionLimit :: SelectionLimit -> [SelectionLimit]
+shrinkSelectionLimit = \case
+    MaximumInputLimit n ->
+        MaximumInputLimit . getNonNegative <$> shrink (NonNegative n)
+    NoLimit ->
+        []
+
+genSelectionSkeleton :: Gen SelectionSkeleton
+genSelectionSkeleton = SelectionSkeleton
+    <$> genSkeletonInputCount
+    <*> genSkeletonOutputs
+    <*> genSkeletonChange
+  where
+    genSkeletonInputCount =
+        getNonNegative <$> arbitrary @(NonNegative Int)
+    genSkeletonOutputs =
+        arbitrary @[TxOut]
+    genSkeletonChange =
+        arbitrary @[(Set AssetId)]
+
+shrinkSelectionSkeleton :: SelectionSkeleton -> [SelectionSkeleton]
+shrinkSelectionSkeleton =
+    shrinkMapBy tupleToSkeleton skeletonToTuple $ liftShrink3
+        shrink
+        shrink
+        shrink
+  where
+    skeletonToTuple (SelectionSkeleton a b c) = (a, b, c)
+    tupleToSkeleton (a, b, c) = (SelectionSkeleton a b c)
+
+--------------------------------------------------------------------------------
+-- Arbitrary instances
+--------------------------------------------------------------------------------
 
 instance Arbitrary a => Arbitrary (NonEmpty a) where
     arbitrary = (:|) <$> arbitrary <*> arbitrary
     shrink = genericShrink
 
-newtype NotNull a = NotNull { unNotNull :: a }
-    deriving (Eq, Show)
+instance Arbitrary AssetId where
+    arbitrary = genAssetId
+    shrink = shrinkAssetId
 
-instance (Arbitrary a, Eq a, Monoid a) => Arbitrary (NotNull a) where
-    arbitrary = NotNull <$> arbitrary `suchThat` (/= mempty)
-    shrink (NotNull u) = NotNull <$> filter (/= mempty) (shrink u)
+instance Arbitrary SelectionLimit where
+    arbitrary = genSelectionLimit
+    shrink = shrinkSelectionLimit
+
+instance Arbitrary SelectionSkeleton where
+    arbitrary = genSelectionSkeleton
+    shrink = shrinkSelectionSkeleton
 
 instance Arbitrary TxIn where
     arbitrary = genTxIn
@@ -210,3 +329,17 @@ instance Arbitrary UTxO where
 instance Arbitrary UTxOIndex where
     arbitrary = genUTxOIndex
     shrink = shrinkUTxOIndex
+
+--------------------------------------------------------------------------------
+-- Utilities
+--------------------------------------------------------------------------------
+
+newtype Report a b = Report { runReport :: a }
+
+instance Functor (Report a) where
+    fmap _ (Report a) = Report a
+
+-- TODO: Get rid of this
+expectRight :: (b -> c) -> Either a b -> c
+expectRight f (Right b) = f b
+expectRight _ (Left  _) = error "unexpected Left"

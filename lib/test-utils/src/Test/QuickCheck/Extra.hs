@@ -12,10 +12,12 @@ module Test.QuickCheck.Extra
     , genSized2
     , genSized2With
     , interleaveRoundRobin
+    , liftShrink3
     , liftShrink6
     , reasonablySized
     , shrinkInterleaved
     , shrinkMapWith
+    , NotNull (..)
     ) where
 
 import Prelude
@@ -23,13 +25,15 @@ import Prelude
 import Data.Map.Strict
     ( Map )
 import Test.QuickCheck
-    ( Gen
+    ( Arbitrary (..)
+    , Gen
     , liftArbitrary2
     , liftShrink2
     , listOf
     , scale
     , shrinkList
     , shrinkMapBy
+    , suchThat
     )
 
 import qualified Data.List as L
@@ -93,6 +97,21 @@ genSized2 genA genB = (,)
 --
 genSized2With :: (a -> b -> c) -> Gen a -> Gen b -> Gen c
 genSized2With f genA genB = uncurry f <$> genSized2 genA genB
+
+-- | Similar to 'liftShrink2', but applicable to 3-tuples.
+--
+liftShrink3
+    :: (a1 -> [a1])
+    -> (a2 -> [a2])
+    -> (a3 -> [a3])
+    -> (a1, a2, a3)
+    -> [(a1, a2, a3)]
+liftShrink3 s1 s2 s3 (a1, a2, a3) =
+    interleaveRoundRobin
+    [ [ (a1', a2 , a3 ) | a1' <- s1 a1 ]
+    , [ (a1 , a2', a3 ) | a2' <- s2 a2 ]
+    , [ (a1 , a2 , a3') | a3' <- s3 a3 ]
+    ]
 
 -- | Similar to 'liftShrink2', but applicable to 6-tuples.
 --
@@ -164,3 +183,14 @@ shrinkMapWith shrinkKey shrinkValue
     = shrinkMapBy Map.fromList Map.toList
     $ shrinkList
     $ liftShrink2 shrinkKey shrinkValue
+
+--------------------------------------------------------------------------------
+-- Non-null values
+--------------------------------------------------------------------------------
+
+newtype NotNull a = NotNull { unNotNull :: a }
+    deriving (Eq, Show)
+
+instance (Arbitrary a, Eq a, Monoid a) => Arbitrary (NotNull a) where
+    arbitrary = NotNull <$> arbitrary `suchThat` (/= mempty)
+    shrink (NotNull u) = NotNull <$> filter (/= mempty) (shrink u)

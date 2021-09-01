@@ -267,6 +267,8 @@ accountForExistingInputs performSelectionFn constraints params =
     modifyParams
         = over #assetsToMint
             modifyAssetsToMint
+        . over #existingInputs
+            modifyExistingInputs
         . over #rewardWithdrawal
             modifyRewardWithdrawal
         . over #utxoAvailable
@@ -274,6 +276,9 @@ accountForExistingInputs performSelectionFn constraints params =
       where
         modifyAssetsToMint :: TokenMap -> TokenMap
         modifyAssetsToMint = TokenMap.add (view #tokens existingInputValue)
+
+        modifyExistingInputs :: UTxO -> UTxO
+        modifyExistingInputs = const UTxO.empty
 
         modifyRewardWithdrawal :: Maybe Coin -> Maybe Coin
         modifyRewardWithdrawal =
