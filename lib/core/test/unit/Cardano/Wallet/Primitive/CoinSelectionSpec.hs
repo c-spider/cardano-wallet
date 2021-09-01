@@ -78,50 +78,18 @@ spec :: Spec
 spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
 
     describe "accountForExistingInputs" $ do
+        it "prop_accountForExistingInputs_computeMinimumCost" $
+            property prop_accountForExistingInputs_computeMinimumCost
+        it "prop_accountForExistingInputs_computeSelectionLimit" $
+            property prop_accountForExistingInputs_computeSelectionLimit
         it "prop_accountForExistingInputs_inputsSelected" $
             property prop_accountForExistingInputs_inputsSelected
-        it "prop_accountForExistingInputs_minimumCost" $
-            property prop_accountForExistingInputs_minimumCost
-        it "prop_accountForExistingInputs_selectionLimit" $
-            property prop_accountForExistingInputs_selectionLimit
         it "prop_accountForExistingInputs_utxoAvailable" $
             property prop_accountForExistingInputs_utxoAvailable
 
-prop_accountForExistingInputs_inputsSelected
-    :: UTxO -> NotNull UTxO -> Property
-prop_accountForExistingInputs_inputsSelected
-    existingInputs' (NotNull inputsSelected) =
-        checkCoverage $
-        cover 10
-            (existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty)
-            "existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty" $
-        conjoin
-            [ dom existingInputs `Set.disjoint`   dom inputsSelected
-            , dom existingInputs `Set.isSubsetOf` dom inputsSelected'
-            ]
-  where
-    existingInputs :: UTxO
-    existingInputs = existingInputs' `UTxO.excluding` dom inputsSelected
-
-    inputsSelected' :: UTxO
-    inputsSelected'
-        = expectRight (UTxO . Map.fromList . F.toList . view #inputsSelected)
-        $ runIdentity
-        $ accountForExistingInputs
-            performSelectionFn
-            emptySelectionConstraints
-            emptySelectionParams {existingInputs}
-      where
-        performSelectionFn :: PerformSelection Identity ()
-        performSelectionFn _constraints _params =
-            Identity $ Right emptySelectionResult
-                { inputsSelected =
-                    NE.fromList $ Map.toList $ unUTxO inputsSelected
-                }
-
-prop_accountForExistingInputs_minimumCost
+prop_accountForExistingInputs_computeMinimumCost
     :: UTxO -> SelectionSkeleton -> Property
-prop_accountForExistingInputs_minimumCost existingInputs skeleton =
+prop_accountForExistingInputs_computeMinimumCost existingInputs skeleton =
     checkCoverage $
     cover 10
         (computeMinimumCost skeleton < computeMinimumCost' skeleton)
@@ -149,9 +117,10 @@ prop_accountForExistingInputs_minimumCost existingInputs skeleton =
             Report $ view #computeMinimumCost constraints
 
 -- TODO: do something similar to minimumCost (with the function)
-prop_accountForExistingInputs_selectionLimit
+prop_accountForExistingInputs_computeSelectionLimit
     :: UTxO -> SelectionLimit -> Property
-prop_accountForExistingInputs_selectionLimit existingInputs selectionLimit =
+prop_accountForExistingInputs_computeSelectionLimit
+    existingInputs selectionLimit =
     checkCoverage $
     cover 10 (selectionLimit == NoLimit) "selectionLimit == NoLimit" $
     cover 10 (selectionLimit /= NoLimit) "selectionLimit /= NoLimit" $
@@ -170,6 +139,38 @@ prop_accountForExistingInputs_selectionLimit existingInputs selectionLimit =
         performSelectionFn :: PerformSelection (Report SelectionLimit) ()
         performSelectionFn constraints _params =
             Report $ view #computeSelectionLimit constraints []
+
+prop_accountForExistingInputs_inputsSelected
+    :: UTxO -> NotNull UTxO -> Property
+prop_accountForExistingInputs_inputsSelected
+    existingInputs' (NotNull inputsSelected) =
+    checkCoverage $
+    cover 10
+        (existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty)
+        "existingInputs /= UTxO.empty && inputsSelected /= UTxO.empty" $
+    conjoin
+        [ dom existingInputs `Set.disjoint`   dom inputsSelected
+        , dom existingInputs `Set.isSubsetOf` dom inputsSelected'
+        ]
+  where
+    existingInputs :: UTxO
+    existingInputs = existingInputs' `UTxO.excluding` dom inputsSelected
+
+    inputsSelected' :: UTxO
+    inputsSelected'
+        = expectRight (UTxO . Map.fromList . F.toList . view #inputsSelected)
+        $ runIdentity
+        $ accountForExistingInputs
+            performSelectionFn
+            emptySelectionConstraints
+            emptySelectionParams {existingInputs}
+      where
+        performSelectionFn :: PerformSelection Identity ()
+        performSelectionFn _constraints _params =
+            Identity $ Right emptySelectionResult
+                { inputsSelected =
+                    NE.fromList $ Map.toList $ unUTxO inputsSelected
+                }
 
 prop_accountForExistingInputs_utxoAvailable :: UTxO -> UTxO -> Property
 prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
