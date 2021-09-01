@@ -84,9 +84,7 @@ prop_accountForExistingInputs_inputsSelected
 
     inputsSelected' :: UTxO
     inputsSelected'
-        = either
-            (error "unexpected Left")
-            (UTxO . Map.fromList . F.toList . view #inputsSelected)
+        = expectRight (UTxO . Map.fromList . F.toList . view #inputsSelected)
         $ runIdentity
         $ accountForExistingInputs
             performSelectionFn
@@ -182,9 +180,20 @@ shouldNotEvaluateFor :: String -> String -> a
 shouldNotEvaluateFor contextName fieldName = error $ unwords
     [fieldName, "was unexpectedly evaluated in", contextName]
 
+expectRight :: (b -> c) -> Either a b -> c
+expectRight f (Right b) = f b
+expectRight _ (Left  _) = error "unexpected Left"
+
 instance Arbitrary a => Arbitrary (NonEmpty a) where
     arbitrary = (:|) <$> arbitrary <*> arbitrary
     shrink = genericShrink
+
+newtype NotNull a = NotNull { unNotNull :: a }
+    deriving (Eq, Show)
+
+instance (Arbitrary a, Eq a, Monoid a) => Arbitrary (NotNull a) where
+    arbitrary = NotNull <$> arbitrary `suchThat` (/= mempty)
+    shrink (NotNull u) = NotNull <$> filter (/= mempty) (shrink u)
 
 instance Arbitrary TxIn where
     arbitrary = genTxIn
@@ -197,13 +206,6 @@ instance Arbitrary TxOut where
 instance Arbitrary UTxO where
     arbitrary = genUTxO
     shrink = shrinkUTxO
-
-newtype NotNull a = NotNull { unNotNull :: a }
-    deriving (Eq, Show)
-
-instance Arbitrary (NotNull UTxO) where
-    arbitrary = NotNull <$> genUTxO `suchThat` (not . UTxO.null)
-    shrink (NotNull u) = NotNull <$> filter (not . UTxO.null) (shrinkUTxO u)
 
 instance Arbitrary UTxOIndex where
     arbitrary = genUTxOIndex
