@@ -9,6 +9,7 @@
 {-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 -- |
 -- Copyright: © 2018-2020 IOHK
@@ -27,7 +28,10 @@ module Cardano.Wallet.Logging
 
       -- * Logging helpers
     , traceWithExceptT
-    , unliftIOTracer
+    , traceResult
+    , formatResultMsg
+    , formatResultMsgWith
+    , resultSeverity
 
       -- * Logging and timing IO actions
     , BracketLog
@@ -37,12 +41,8 @@ module Cardano.Wallet.Logging
     , bracketTracer'
     , produceTimings
 
-      -- * Simple logging around monadic functions
-    , resultTracer
-    , formatResultMsg
-    , resultSeverity
-
-      -- * Combinators
+      -- * Tracer conversions
+    , unliftIOTracer
     , flatContramapTracer
     ) where
 
@@ -160,16 +160,62 @@ stdoutTextTracer = Tracer $ liftIO . B8.putStrLn . T.encodeUtf8 . toText
                                 Logging helpers
 -------------------------------------------------------------------------------}
 
--- | Run an 'ExceptT' action, then trace its result, all in one step.
+-- | Run an 'ExceptT' action, then trace its result, all in one step. This is a more basic version of 'resultTracer'.
 traceWithExceptT :: Monad m => Tracer m (Either e a) -> ExceptT e m a -> ExceptT e m a
 traceWithExceptT tr (ExceptT action) = ExceptT $ do
     res <- action
     traceWith tr res
     pure res
 
--- | Convert an IO tracer to a 'm' tracer.
-unliftIOTracer :: MonadIO m => Tracer IO a -> Tracer m a
-unliftIOTracer = natTracer liftIO
+-- | Log around an 'ExceptT' action. The result of the action is captured as an
+-- 'Either' in the log message. Other unexpected exceptions are captured in the
+-- 'BracketLog''.
+traceResult
+    :: MonadUnliftIO m
+    => Tracer m (BracketLog' (Either e r))
+    -> ExceptT e m r
+    -> ExceptT e m r
+traceResult tr = ExceptT . bracketTracer' id tr . runExceptT
+
+-- | Format a tracer message from 'traceResult' as multiline text.
+formatResultMsg
+    :: (Show e, IsList t, Item t ~ (Text, v), Buildable v, Buildable r)
+    => Text
+    -- ^ Function name.
+    -> t
+    -- ^ Input parameters.
+    -> BracketLog' (Either e r)
+    -- ^ Logging around function.
+    -> Builder
+formatResultMsg = formatResultMsgWith (nameF "ERROR" . build . show) build
+
+-- | Same as 'formatResultMsg', but accepts result formatters as parameters.
+formatResultMsgWith
+    :: (IsList t, Item t ~ (Text, v), Buildable v)
+    => (e -> Builder)
+    -- ^ Error message formatter
+    -> (r -> Builder)
+    -- ^ Result formatter
+    -> Text
+    -- ^ Function name.
+    -> t
+    -- ^ Input parameters.
+    -> BracketLog' (Either e r)
+    -- ^ Logging around function.
+    -> Builder
+formatResultMsgWith err fmt title params b = nameF (build title) $ blockListF
+    [ nameF "inputs" (blockMapF params)
+    , buildBracketLog (either err fmt) b
+    ]
+
+-- | A good default mapping of message severities for 'traceResult'.
+resultSeverity :: Severity -> BracketLog' (Either e r) -> Severity
+resultSeverity base = \case
+    BracketStart -> base
+    BracketFinish (Left _) -> Error
+    BracketFinish (Right _) -> base
+    BracketException _ -> Error
+    BracketAsyncException _ -> base
 
 {-------------------------------------------------------------------------------
                              Logging of Exceptions
@@ -215,7 +261,7 @@ data BracketLog' r
     -- ^ Logged when the action throws an exception.
     | BracketAsyncException (LoggedException SomeException)
     -- ^ Logged when the action receives an async exception.
-    deriving (Generic, Show, Eq, ToJSON)
+    deriving (Generic, Show, Eq, ToJSON, Functor)
 
 instance Buildable r => ToText (BracketLog' r)
 
@@ -346,6 +392,14 @@ produceTimings f trDiffTime = do
         tr = flatContramapTracer f trBracket
     pure tr
 
+{-------------------------------------------------------------------------------
+                               Tracer conversions
+-------------------------------------------------------------------------------}
+
+-- | Convert an IO tracer to a 'm' tracer.
+unliftIOTracer :: MonadIO m => Tracer IO a -> Tracer m a
+unliftIOTracer = natTracer liftIO
+
 -- | Conditional mapping of a 'Tracer'.
 flatContramapTracer
     :: Monad m
@@ -355,40 +409,3 @@ flatContramapTracer
 flatContramapTracer p tr = Tracer $ \a -> case p a of
      Just b -> runTracer tr b
      Nothing -> pure ()
-
-{-------------------------------------------------------------------------------
-                      Bracket logging convenience helpers
--------------------------------------------------------------------------------}
-
--- | Log around an 'ExceptT' action. The result of the action is captured as an
--- 'Either' in the log message. Other unexpected exceptions are captured in the
--- 'BracketLog''.
-resultTracer
-    :: MonadUnliftIO m
-    => Tracer m (BracketLog' (Either e r))
-    -> ExceptT e m r
-    -> ExceptT e m r
-resultTracer tr = ExceptT . bracketTracer' id tr . runExceptT
-
-formatResultMsg
-    :: (Show e, IsList t, Item t ~ (Text, v), Buildable v, Buildable r)
-    => Text
-    -- ^ Function name.
-    -> t
-    -- ^ Input parameters.
-    -> BracketLog' (Either e r)
-    -- ^ Logging around function.
-    -> Builder
-formatResultMsg title params b = nameF (build title) $ blockListF
-    [ nameF "inputs" (blockMapF params)
-    , buildBracketLog formatEither b
-    ]
-  where
-    formatEither = \case
-        Left e -> nameF "ERROR" (build $ show e)
-        Right r -> build r
-
-resultSeverity :: BracketLog' (Either e r) -> Severity
-resultSeverity = \case
-    BracketFinish (Left _) -> Error
-    msg -> getSeverityAnnotation msg
