@@ -259,6 +259,7 @@ shouldNotEvaluateFor contextName fieldName = error $ unwords
 -- Generators and shrinkers
 --------------------------------------------------------------------------------
 
+-- TODO: Move to Gen module.
 genSelectionLimit :: Gen SelectionLimit
 genSelectionLimit = oneof
     [ MaximumInputLimit . getNonNegative <$> arbitrary
@@ -272,6 +273,7 @@ shrinkSelectionLimit = \case
     NoLimit ->
         []
 
+-- TODO: Move to Gen module.
 genSelectionSkeleton :: Gen SelectionSkeleton
 genSelectionSkeleton = SelectionSkeleton
     <$> genSkeletonInputCount
