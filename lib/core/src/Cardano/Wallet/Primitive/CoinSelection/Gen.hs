@@ -13,16 +13,10 @@ import Prelude
 
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionLimit (..), SelectionSkeleton (..) )
-import Cardano.Wallet.Primitive.Types.TokenMap
-    ( AssetId )
 import Cardano.Wallet.Primitive.Types.TokenMap.Gen
     ( genAssetId, shrinkAssetId )
-import Cardano.Wallet.Primitive.Types.Tx
-    ( TxOut )
 import Cardano.Wallet.Primitive.Types.Tx.Gen
     ( genTxOut, shrinkTxOut )
-import Data.Set
-    ( Set )
 import Test.QuickCheck
     ( Gen
     , NonNegative (..)
