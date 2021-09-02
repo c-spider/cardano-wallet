@@ -160,7 +160,8 @@ prop_accountForExistingInputs_inputsSelected
 
     inputsSelected' :: UTxO
     inputsSelected'
-        = expectRight (UTxO . Map.fromList . F.toList . view #inputsSelected)
+        = (UTxO . Map.fromList . F.toList . view #inputsSelected)
+        $ expectRight
         $ runIdentity
         $ accountForExistingInputs
             performSelectionFn
@@ -295,7 +296,6 @@ newtype Report a b = Report { getReport :: a }
 instance Functor (Report a) where
     fmap _ (Report a) = Report a
 
--- TODO: Get rid of this
-expectRight :: (b -> c) -> Either a b -> c
-expectRight f (Right b) = f b
-expectRight _ (Left  _) = error "unexpected Left"
+expectRight :: Either a b -> b
+expectRight (Right b) = b
+expectRight (Left  _) = error "unexpected Left"
