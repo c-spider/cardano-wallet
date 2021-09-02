@@ -20,7 +20,11 @@ import Cardano.Wallet.Primitive.CoinSelection
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionLimit (..), SelectionResult (..), SelectionSkeleton (..) )
 import Cardano.Wallet.Primitive.CoinSelection.Gen
-    ( genSelectionLimit, shrinkSelectionLimit )
+    ( genSelectionLimit
+    , genSelectionSkeleton
+    , shrinkSelectionLimit
+    , shrinkSelectionSkeleton
+    )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -49,25 +53,20 @@ import Data.Generics.Labels
     ()
 import Data.List.NonEmpty
     ( NonEmpty (..) )
-import Data.Set
-    ( Set )
 import Test.Hspec
     ( Spec, describe, it )
 import Test.QuickCheck
     ( Arbitrary (..)
-    , Gen
-    , NonNegative (..)
     , Property
     , checkCoverage
     , conjoin
     , cover
     , genericShrink
     , property
-    , shrinkMapBy
     , (===)
     )
 import Test.QuickCheck.Extra
-    ( NotNull (..), liftShrink3 )
+    ( NotNull (..) )
 
 import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
@@ -108,7 +107,7 @@ prop_accountForExistingInputs_computeMinimumCost existingInputs skeleton =
     computeMinimumCost = Coin . fromIntegral . length . show
 
     computeMinimumCost' :: SelectionSkeleton -> Coin
-    computeMinimumCost' = runReport $ accountForExistingInputs
+    computeMinimumCost' = getReport $ accountForExistingInputs
         performSelectionFn
         emptySelectionConstraints {computeMinimumCost}
         emptySelectionParams {existingInputs}
@@ -133,7 +132,7 @@ prop_accountForExistingInputs_computeSelectionLimit
             MaximumInputLimit (n - UTxO.size existingInputs)
   where
     selectionLimit' :: SelectionLimit
-    selectionLimit' = runReport $ accountForExistingInputs
+    selectionLimit' = getReport $ accountForExistingInputs
         performSelectionFn
         emptySelectionConstraints {computeSelectionLimit = const selectionLimit}
         emptySelectionParams {existingInputs}
@@ -187,7 +186,7 @@ prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
         ]
   where
     utxoAvailable' :: UTxO
-    utxoAvailable' = UTxOIndex.toUTxO $ runReport $ accountForExistingInputs
+    utxoAvailable' = UTxOIndex.toUTxO $ getReport $ accountForExistingInputs
         performSelectionFn
         emptySelectionConstraints
         emptySelectionParams
@@ -297,7 +296,7 @@ instance Arbitrary UTxOIndex where
 -- Utilities
 --------------------------------------------------------------------------------
 
-newtype Report a b = Report { runReport :: a }
+newtype Report a b = Report { getReport :: a }
 
 instance Functor (Report a) where
     fmap _ (Report a) = Report a
