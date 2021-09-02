@@ -1,0 +1,93 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TypeApplications #-}
+
+module Cardano.Wallet.Primitive.CoinSelection.Gen
+    ( genSelectionLimit
+    , genSelectionSkeleton
+    , shrinkSelectionLimit
+    , shrinkSelectionSkeleton
+    )
+    where
+
+import Prelude
+
+import Cardano.Wallet.Primitive.CoinSelection.Balance
+    ( SelectionLimit (..), SelectionSkeleton (..) )
+import Cardano.Wallet.Primitive.Types.TokenMap
+    ( AssetId )
+import Cardano.Wallet.Primitive.Types.TokenMap.Gen
+    ( genAssetId, shrinkAssetId )
+import Cardano.Wallet.Primitive.Types.Tx
+    ( TxOut )
+import Cardano.Wallet.Primitive.Types.Tx.Gen
+    ( genTxOut, shrinkTxOut )
+import Data.Set
+    ( Set )
+import Test.QuickCheck
+    ( Gen
+    , NonNegative (..)
+    , arbitrary
+    , listOf
+    , oneof
+    , shrink
+    , shrinkList
+    , shrinkMapBy
+    )
+import Test.QuickCheck.Extra
+    ( liftShrink3 )
+
+import qualified Data.Set as Set
+
+--------------------------------------------------------------------------------
+-- Selection limits
+--------------------------------------------------------------------------------
+
+genSelectionLimit :: Gen SelectionLimit
+genSelectionLimit = oneof
+    [ MaximumInputLimit . getNonNegative <$> arbitrary
+    , pure NoLimit
+    ]
+
+shrinkSelectionLimit :: SelectionLimit -> [SelectionLimit]
+shrinkSelectionLimit = \case
+    MaximumInputLimit n ->
+        MaximumInputLimit . getNonNegative <$> shrink (NonNegative n)
+    NoLimit ->
+        []
+
+--------------------------------------------------------------------------------
+-- Selection skeletons
+--------------------------------------------------------------------------------
+
+genSelectionSkeleton :: Gen SelectionSkeleton
+genSelectionSkeleton = SelectionSkeleton
+    <$> genSkeletonInputCount
+    <*> genSkeletonOutputs
+    <*> genSkeletonChange
+  where
+    genSkeletonInputCount =
+        getNonNegative <$> arbitrary @(NonNegative Int)
+    genSkeletonOutputs =
+        listOf genTxOut
+    genSkeletonChange =
+        listOf (Set.fromList <$> listOf genAssetId)
+
+shrinkSelectionSkeleton :: SelectionSkeleton -> [SelectionSkeleton]
+shrinkSelectionSkeleton =
+    shrinkMapBy tupleToSkeleton skeletonToTuple $ liftShrink3
+        shrinkSkeletonInputCount
+        shrinkSkeletonOutputs
+        shrinkSkeletonChange
+  where
+    shrinkSkeletonInputCount :: Int -> [Int]
+    shrinkSkeletonInputCount = shrink @Int
+
+    shrinkSkeletonOutputs :: [TxOut] -> [[TxOut]]
+    shrinkSkeletonOutputs = shrinkList shrinkTxOut
+
+    shrinkSkeletonChange :: [Set AssetId] -> [[Set AssetId]]
+    shrinkSkeletonChange = shrinkList $
+        shrinkMapBy Set.fromList Set.toList (shrinkList shrinkAssetId)
+
+    skeletonToTuple (SelectionSkeleton a b c) = (a, b, c)
+    tupleToSkeleton (a, b, c) = (SelectionSkeleton a b c)

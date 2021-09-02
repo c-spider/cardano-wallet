@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Cardano.Wallet.Primitive.CoinSelectionSpec
@@ -18,6 +19,8 @@ import Cardano.Wallet.Primitive.CoinSelection
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionLimit (..), SelectionResult (..), SelectionSkeleton (..) )
+import Cardano.Wallet.Primitive.CoinSelection.Gen
+    ( genSelectionLimit, shrinkSelectionLimit )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -59,7 +62,6 @@ import Test.QuickCheck
     , conjoin
     , cover
     , genericShrink
-    , oneof
     , property
     , shrinkMapBy
     , (===)
@@ -254,48 +256,6 @@ emptySelectionResult = SelectionResult
 shouldNotEvaluateFor :: String -> String -> a
 shouldNotEvaluateFor contextName fieldName = error $ unwords
     [fieldName, "was unexpectedly evaluated in", contextName]
-
---------------------------------------------------------------------------------
--- Generators and shrinkers
---------------------------------------------------------------------------------
-
--- TODO: Move to Gen module.
-genSelectionLimit :: Gen SelectionLimit
-genSelectionLimit = oneof
-    [ MaximumInputLimit . getNonNegative <$> arbitrary
-    , pure NoLimit
-    ]
-
-shrinkSelectionLimit :: SelectionLimit -> [SelectionLimit]
-shrinkSelectionLimit = \case
-    MaximumInputLimit n ->
-        MaximumInputLimit . getNonNegative <$> shrink (NonNegative n)
-    NoLimit ->
-        []
-
--- TODO: Move to Gen module.
-genSelectionSkeleton :: Gen SelectionSkeleton
-genSelectionSkeleton = SelectionSkeleton
-    <$> genSkeletonInputCount
-    <*> genSkeletonOutputs
-    <*> genSkeletonChange
-  where
-    genSkeletonInputCount =
-        getNonNegative <$> arbitrary @(NonNegative Int)
-    genSkeletonOutputs =
-        arbitrary @[TxOut]
-    genSkeletonChange =
-        arbitrary @[(Set AssetId)]
-
-shrinkSelectionSkeleton :: SelectionSkeleton -> [SelectionSkeleton]
-shrinkSelectionSkeleton =
-    shrinkMapBy tupleToSkeleton skeletonToTuple $ liftShrink3
-        shrink
-        shrink
-        shrink
-  where
-    skeletonToTuple (SelectionSkeleton a b c) = (a, b, c)
-    tupleToSkeleton (a, b, c) = (SelectionSkeleton a b c)
 
 --------------------------------------------------------------------------------
 -- Arbitrary instances
