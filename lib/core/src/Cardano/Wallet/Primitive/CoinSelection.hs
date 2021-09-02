@@ -40,7 +40,6 @@ import Prelude
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionCriteria (..)
     , SelectionLimit
-    , SelectionLimitOf (..)
     , SelectionResult
     , SelectionSkeleton
     )
@@ -258,11 +257,7 @@ accountForExistingInputs performSelectionFn constraints params =
         modifyComputeSelectionLimit = (modifySelectionLimit .)
           where
             modifySelectionLimit :: SelectionLimit -> SelectionLimit
-            modifySelectionLimit = \case
-                NoLimit ->
-                    NoLimit
-                MaximumInputLimit m ->
-                    MaximumInputLimit $ m - UTxO.size existingInputs
+            modifySelectionLimit = fmap $ subtract $ UTxO.size existingInputs
 
     modifyParams :: SelectionParams -> SelectionParams
     modifyParams
