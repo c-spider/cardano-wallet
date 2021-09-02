@@ -18,7 +18,11 @@ import Cardano.Wallet.Primitive.CoinSelection
     , accountForExistingInputs
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionLimit (..), SelectionResult (..), SelectionSkeleton (..) )
+    ( SelectionLimit
+    , SelectionLimitOf (..)
+    , SelectionResult (..)
+    , SelectionSkeleton (..)
+    )
 import Cardano.Wallet.Primitive.CoinSelection.Gen
     ( genSelectionLimit
     , genSelectionSkeleton
@@ -63,7 +67,6 @@ import Test.QuickCheck
     , cover
     , genericShrink
     , property
-    , (===)
     )
 import Test.QuickCheck.Extra
     ( NotNull (..) )
@@ -88,58 +91,58 @@ spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
         it "prop_accountForExistingInputs_utxoAvailable" $
             property prop_accountForExistingInputs_utxoAvailable
 
+type ComputeMinimumCost = SelectionSkeleton -> Coin
+
 prop_accountForExistingInputs_computeMinimumCost
     :: UTxO -> SelectionSkeleton -> Property
 prop_accountForExistingInputs_computeMinimumCost existingInputs skeleton =
     checkCoverage $
     cover 10
-        (computeMinimumCost skeleton < computeMinimumCost' skeleton)
-        "computeMinimumCost skeleton < computeMinimumCost' skeleton" $
+        (computeMinimumCost' skeleton > computeMinimumCost skeleton)
+        "computeMinimumCost' skeleton > computeMinimumCost skeleton" $
     conjoin
-        [ computeMinimumCost
+        [ computeMinimumCost' skeleton >= computeMinimumCost skeleton
+        , computeMinimumCost' skeleton == computeMinimumCost
             (skeleton & over #skeletonInputCount (+ UTxO.size existingInputs))
-            ==
-            computeMinimumCost' skeleton
-        , computeMinimumCost skeleton <= computeMinimumCost' skeleton
         ]
   where
-    computeMinimumCost :: SelectionSkeleton -> Coin
+    computeMinimumCost :: ComputeMinimumCost
     computeMinimumCost = Coin . fromIntegral . length . show
 
-    computeMinimumCost' :: SelectionSkeleton -> Coin
+    computeMinimumCost' :: ComputeMinimumCost
     computeMinimumCost' = getReport $ accountForExistingInputs
-        performSelectionFn
+        (const . Report . view #computeMinimumCost)
         emptySelectionConstraints {computeMinimumCost}
         emptySelectionParams {existingInputs}
-      where
-        performSelectionFn
-            :: PerformSelection (Report (SelectionSkeleton -> Coin)) ()
-        performSelectionFn constraints _params =
-            Report $ view #computeMinimumCost constraints
 
--- TODO: do something similar to minimumCost (with the function)
 prop_accountForExistingInputs_computeSelectionLimit
-    :: UTxO -> SelectionLimit -> Property
-prop_accountForExistingInputs_computeSelectionLimit
-    existingInputs selectionLimit =
+    :: UTxO -> [TxOut] -> Property
+prop_accountForExistingInputs_computeSelectionLimit existingInputs txOuts =
     checkCoverage $
-    cover 10 (selectionLimit == NoLimit) "selectionLimit == NoLimit" $
-    cover 10 (selectionLimit /= NoLimit) "selectionLimit /= NoLimit" $
-    selectionLimit' === case selectionLimit of
-        NoLimit ->
-            NoLimit
-        MaximumInputLimit n ->
-            MaximumInputLimit (n - UTxO.size existingInputs)
+    cover 10
+        (computeSelectionLimit txOuts == NoLimit)
+        "computeSelectionLimit txOuts == NoLimit" $
+    cover 10
+        (computeSelectionLimit txOuts /= NoLimit)
+        "computeSelectionLimit txOuts /= NoLimit" $
+    conjoin
+        [ computeSelectionLimit' txOuts <= computeSelectionLimit txOuts
+        , computeSelectionLimit' txOuts == fmap
+            (subtract (UTxO.size existingInputs)) (computeSelectionLimit txOuts)
+        ]
   where
-    selectionLimit' :: SelectionLimit
-    selectionLimit' = getReport $ accountForExistingInputs
-        performSelectionFn
-        emptySelectionConstraints {computeSelectionLimit = const selectionLimit}
+    computeSelectionLimit :: [TxOut] -> SelectionLimit
+    computeSelectionLimit txOuts
+        | even (length txOuts) =
+            NoLimit
+        | otherwise =
+            MaximumInputLimit $ max 0 (100 - length txOuts)
+
+    computeSelectionLimit' :: [TxOut] -> SelectionLimit
+    computeSelectionLimit' = getReport $ accountForExistingInputs
+        (const . Report . view #computeSelectionLimit)
+        emptySelectionConstraints {computeSelectionLimit}
         emptySelectionParams {existingInputs}
-      where
-        performSelectionFn :: PerformSelection (Report SelectionLimit) ()
-        performSelectionFn constraints _params =
-            Report $ view #computeSelectionLimit constraints []
 
 prop_accountForExistingInputs_inputsSelected
     :: UTxO -> NotNull UTxO -> Property
@@ -167,11 +170,8 @@ prop_accountForExistingInputs_inputsSelected
             emptySelectionParams {existingInputs}
       where
         performSelectionFn :: PerformSelection Identity ()
-        performSelectionFn _constraints _params =
-            Identity $ Right emptySelectionResult
-                { inputsSelected =
-                    NE.fromList $ Map.toList $ unUTxO inputsSelected
-                }
+        performSelectionFn _ _ = Identity $ Right emptySelectionResult
+            {inputsSelected = NE.fromList $ Map.toList $ unUTxO inputsSelected}
 
 prop_accountForExistingInputs_utxoAvailable :: UTxO -> UTxO -> Property
 prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
@@ -187,16 +187,12 @@ prop_accountForExistingInputs_utxoAvailable utxoAvailable existingInputs =
   where
     utxoAvailable' :: UTxO
     utxoAvailable' = UTxOIndex.toUTxO $ getReport $ accountForExistingInputs
-        performSelectionFn
+        (const (Report . view #utxoAvailable))
         emptySelectionConstraints
         emptySelectionParams
             { utxoAvailable = UTxOIndex.fromUTxO utxoAvailable
             , existingInputs
             }
-      where
-        performSelectionFn :: PerformSelection (Report UTxOIndex) ()
-        performSelectionFn _constraints params =
-            Report $ view #utxoAvailable params
 
 --------------------------------------------------------------------------------
 -- Empty values

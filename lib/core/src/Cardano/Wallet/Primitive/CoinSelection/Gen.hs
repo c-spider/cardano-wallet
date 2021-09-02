@@ -12,7 +12,7 @@ module Cardano.Wallet.Primitive.CoinSelection.Gen
 import Prelude
 
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionLimit (..), SelectionSkeleton (..) )
+    ( SelectionLimit, SelectionLimitOf (..), SelectionSkeleton (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap.Gen
     ( genAssetId, shrinkAssetId )
 import Cardano.Wallet.Primitive.Types.Tx.Gen
