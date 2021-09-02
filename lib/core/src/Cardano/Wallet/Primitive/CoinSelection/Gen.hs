@@ -79,14 +79,12 @@ shrinkSelectionSkeleton =
         shrinkSkeletonOutputs
         shrinkSkeletonChange
   where
-    shrinkSkeletonInputCount :: Int -> [Int]
-    shrinkSkeletonInputCount = shrink @Int
-
-    shrinkSkeletonOutputs :: [TxOut] -> [[TxOut]]
-    shrinkSkeletonOutputs = shrinkList shrinkTxOut
-
-    shrinkSkeletonChange :: [Set AssetId] -> [[Set AssetId]]
-    shrinkSkeletonChange = shrinkList $
+    shrinkSkeletonInputCount =
+        shrink @Int
+    shrinkSkeletonOutputs =
+        shrinkList shrinkTxOut
+    shrinkSkeletonChange =
+        shrinkList $
         shrinkMapBy Set.fromList Set.toList (shrinkList shrinkAssetId)
 
     skeletonToTuple (SelectionSkeleton a b c) = (a, b, c)
