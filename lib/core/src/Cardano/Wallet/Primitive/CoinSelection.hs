@@ -207,10 +207,10 @@ data SelectionParams = SelectionParams
         :: UTxO
         -- ^ Specifies a set of existing inputs to include.
     , outputsToCover
-        :: (NonEmpty TxOut)
+        :: NonEmpty TxOut
         -- ^ Specifies a set of outputs that must be paid for.
     , rewardWithdrawal
-        :: (Maybe Coin)
+        :: Maybe Coin
         -- ^ Specifies the value of a withdrawal from a reward account.
     , utxoAvailable
         :: UTxOIndex
