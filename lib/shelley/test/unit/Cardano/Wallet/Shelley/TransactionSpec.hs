@@ -61,9 +61,10 @@ import Cardano.Wallet.Primitive.AddressDerivation.Icarus
 import Cardano.Wallet.Primitive.AddressDerivation.Shelley
     ( ShelleyKey )
 import Cardano.Wallet.Primitive.CoinSelection
-    ( SelectionError (..) )
+    ( ErrWalletSelection (..) )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionResult (..)
+    ( SelectionError (..)
+    , SelectionResult (..)
     , UnableToConstructChangeError (..)
     , emptySkeleton
     , selectionDelta
@@ -201,7 +202,6 @@ import Test.Utils.Pretty
     ( Pretty (..), (====) )
 
 import qualified Cardano.Api as Cardano
-import qualified Cardano.Wallet.Primitive.CoinSelection.Balance as Balance
 import qualified Cardano.Wallet.Primitive.Types.TokenBundle as TokenBundle
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 import qualified Data.ByteArray as BA
@@ -433,16 +433,17 @@ feeCalculationSpec = describe "fee calculations" $ do
     pp :: ProtocolParameters
     pp = dummyProtocolParameters
         { txParameters = dummyTxParameters
-            { getFeePolicy = LinearFee (Quantity 100_000) (Quantity 100)
+            { getFeePolicy = fp
             }
         }
+    fp = LinearFee (Quantity 100_000) (Quantity 100)
 
     minFee :: TransactionCtx -> Integer
     minFee ctx = coinToInteger $ calcMinimumCost testTxLayer pp ctx sel
       where sel = emptySkeleton
 
     minFeeSkeleton :: TxSkeleton -> Integer
-    minFeeSkeleton = coinToInteger . estimateTxCost pp
+    minFeeSkeleton = coinToInteger . estimateTxCost fp
 
     estimateTxSize' :: TxSkeleton -> Integer
     estimateTxSize' = fromIntegral . unTxSize . estimateTxSize
@@ -455,10 +456,10 @@ feeEstimationRegressionSpec = describe "Regression tests" $ do
     it "#1740 Fee estimation at the boundaries" $ do
         let requiredCost = Coin 166029
         let runSelection = except $ Left
-                $ ErrSelectAssetsSelectionError
-                $ SelectionBalanceError
-                $ Balance.UnableToConstructChange
-                $ Balance.UnableToConstructChangeError
+                $ ErrSelectAssets
+                $ ErrWalletSelectionBalance
+                $ UnableToConstructChange
+                $ UnableToConstructChangeError
                     { requiredCost
                     , shortfall = Coin 100000
                     }
@@ -979,10 +980,13 @@ emptyTxSkeleton = mkTxSkeleton
     defaultTransactionCtx
     emptySkeleton
 
+mockFeePolicy :: FeePolicy
+mockFeePolicy = LinearFee (Quantity 1.0) (Quantity 2.0)
+
 mockProtocolParameters :: ProtocolParameters
 mockProtocolParameters = dummyProtocolParameters
     { txParameters = TxParameters
-        { getFeePolicy = LinearFee (Quantity 1.0) (Quantity 2.0)
+        { getFeePolicy = mockFeePolicy
         , getTxMaxSize = Quantity 16384
         , getTokenBundleMaxSize = TokenBundleMaxSize $ TxSize 4000
         }
@@ -1041,7 +1045,7 @@ instance Arbitrary MockSelection where
 prop_txConstraints_txBaseCost :: Property
 prop_txConstraints_txBaseCost =
     txBaseCost mockTxConstraints
-        === estimateTxCost mockProtocolParameters emptyTxSkeleton
+        === estimateTxCost mockFeePolicy emptyTxSkeleton
 
 -- Tests that using 'txBaseSize' to estimate the size of an empty selection
 -- produces a result that is consistent with the result of using
@@ -1074,7 +1078,7 @@ prop_txConstraints_txCost mock =
         , F.foldMap (txOutputCost mockTxConstraints . tokens) txOutputs
         , txRewardWithdrawalCost mockTxConstraints txRewardWithdrawal
         ]
-    lowerBound = estimateTxCost mockProtocolParameters emptyTxSkeleton
+    lowerBound = estimateTxCost mockFeePolicy emptyTxSkeleton
         {txInputCount, txOutputs, txRewardWithdrawal}
     -- We allow a small amount of overestimation due to the slight variation in
     -- the marginal cost of an input:

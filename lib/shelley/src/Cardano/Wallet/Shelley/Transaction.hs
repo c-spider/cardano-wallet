@@ -72,7 +72,7 @@ import Cardano.Wallet.Primitive.CoinSelection.Balance
     , selectionDelta
     )
 import Cardano.Wallet.Primitive.Types
-    ( FeePolicy (..), ProtocolParameters (..), TxParameters (..) )
+    ( FeePolicy (..), ProtocolParameters (..) )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
@@ -307,7 +307,7 @@ newTransactionLayer networkId = TransactionLayer
         first (const ()) . _mkSignedTransaction networkId keyStore
 
     , calcMinimumCost = \pp ctx skeleton ->
-        estimateTxCost pp $
+        estimateTxCost (pp ^. #txParameters . #getFeePolicy) $
         mkTxSkeleton (txWitnessTagFor @k) ctx skeleton
 
     , computeSelectionLimit = \pp ctx outputsToCover -> MaximumInputLimit $
@@ -469,8 +469,10 @@ txConstraints protocolParams witnessTag = TxConstraints
     , txMaximumSize
     }
   where
+    txp = view #txParameters protocolParams
+
     txBaseCost =
-        estimateTxCost protocolParams empty
+        estimateTxCost (view #getFeePolicy txp) empty
 
     txBaseSize =
         estimateTxSize empty
@@ -489,9 +491,7 @@ txConstraints protocolParams witnessTag = TxConstraints
 
     txOutputMaximumSize = (<>)
         (txOutputSize mempty)
-        (view
-            (#txParameters . #getTokenBundleMaxSize . #unTokenBundleMaxSize)
-            protocolParams)
+        (view (#getTokenBundleMaxSize . #unTokenBundleMaxSize) txp)
 
     txOutputMaximumTokenQuantity =
         TokenQuantity $ fromIntegral $ maxBound @Word64
@@ -518,7 +518,7 @@ txConstraints protocolParams witnessTag = TxConstraints
     -- skeleton.
     marginalCostOf :: TxSkeleton -> Coin
     marginalCostOf =
-        Coin.distance txBaseCost . estimateTxCost protocolParams
+        Coin.distance txBaseCost . estimateTxCost (view #getFeePolicy txp)
 
     -- Computes the size difference between the given skeleton and an empty
     -- skeleton.
@@ -609,14 +609,11 @@ mkTxSkeleton witness context skeleton = TxSkeleton
     , txMintBurnAssets = []
     }
 
--- | Estimates the final cost of a transaction based on its skeleton.
---
-estimateTxCost :: ProtocolParameters -> TxSkeleton -> Coin
-estimateTxCost pp skeleton =
-    computeFee $ estimateTxSize skeleton
+-- | Conservatively estimates the transaction fee based on its skeleton.
+estimateTxCost :: FeePolicy -> TxSkeleton -> Coin
+estimateTxCost (LinearFee (Quantity a) (Quantity b)) =
+    computeFee . estimateTxSize
   where
-    LinearFee (Quantity a) (Quantity b) = getFeePolicy $ txParameters pp
-
     computeFee :: TxSize -> Coin
     computeFee (TxSize size) =
         Coin $ ceiling (a + b * fromIntegral size)

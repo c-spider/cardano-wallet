@@ -294,14 +294,14 @@ import Cardano.Wallet.Primitive.AddressDiscovery.Shared
     , isShared
     )
 import Cardano.Wallet.Primitive.CoinSelection
-    ( ErrPrepareOutputs
+    ( ErrWalletSelection (..)
     , SelectionConstraints (..)
-    , SelectionError (..)
     , SelectionParams (..)
-    , performSelection
+    , runWalletCoinSelection
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
-    ( SelectionResult (..)
+    ( SelectionError (..)
+    , SelectionResult (..)
     , UnableToConstructChangeError (..)
     , emptySkeleton
     , makeSelectionReportDetailed
@@ -337,13 +337,11 @@ import Cardano.Wallet.Primitive.Types
     ( ActiveSlotCoefficient (..)
     , Block (..)
     , BlockHeader (..)
-    , DelegationCertificate (..)
     , GenesisParameters (..)
     , IsDelegatingTo (..)
     , NetworkParameters (..)
     , PassphraseScheme (..)
     , PoolId (..)
-    , PoolLifeCycleStatus (..)
     , ProtocolParameters (..)
     , Range (..)
     , Signature (..)
@@ -355,17 +353,18 @@ import Cardano.Wallet.Primitive.Types
     , WalletMetadata (..)
     , WalletName (..)
     , WalletPassphraseInfo (..)
-    , dlgCertPoolId
     , wholeRange
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..), AddressState (..) )
 import Cardano.Wallet.Primitive.Types.Coin
-    ( Coin (..), addCoin, coinToInteger, sumCoins )
+    ( Coin (..), coinToInteger, sumCoins )
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash (..) )
 import Cardano.Wallet.Primitive.Types.RewardAccount
-    ( RewardAccount (..) )
+    ( DelegationCertificate (..), RewardAccount (..), dlgCertPoolId )
+import Cardano.Wallet.Primitive.Types.StakePools
+    ( PoolLifeCycleStatus (..), getPoolRetirementCertificate )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -499,6 +498,8 @@ import Fmt
     )
 import GHC.Generics
     ( Generic )
+import Numeric.Natural
+    ( Natural )
 import Safe
     ( lastMay )
 import Statistics.Quantile
@@ -514,7 +515,6 @@ import qualified Cardano.Crypto.Wallet as CC
 import qualified Cardano.Wallet.Primitive.AddressDiscovery.Random as Rnd
 import qualified Cardano.Wallet.Primitive.AddressDiscovery.Sequential as Seq
 import qualified Cardano.Wallet.Primitive.AddressDiscovery.Shared as Shared
-import qualified Cardano.Wallet.Primitive.CoinSelection.Balance as Balance
 import qualified Cardano.Wallet.Primitive.Migration as Migration
 import qualified Cardano.Wallet.Primitive.Types as W
 import qualified Cardano.Wallet.Primitive.Types.Coin as Coin
@@ -1517,10 +1517,10 @@ selectAssets
     -> (s -> SelectionResult TokenBundle -> result)
     -> ExceptT ErrSelectAssets IO result
 selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
-    sel <- traceResult tr' $ do
+    sel <- traceResult trSelect $ do
         guardPendingWithdrawal
         pp <- liftIO $ currentProtocolParameters nl
-        withExceptT ErrSelectAssetsSelectionError $ ExceptT $ performSelection
+        handleErrors $ runWalletCoinSelection
             SelectionConstraints
                 { assessTokenBundleSize =
                     tokenBundleSizeAssessor tl $
@@ -1533,14 +1533,16 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
                     view #computeSelectionLimit tl pp txCtx
                 , maximumCollateralInputCount =
                     view #maximumCollateralInputCount pp
+                , depositAmount =
+                    view #stakeKeyDeposit pp
                 }
             SelectionParams
                 { assetsToBurn = mempty -- TODO: implement
                 , assetsToMint = mempty -- TODO: implement
                 , outputsToCover = outputs
-                , rewardWithdrawals = withdrawalToCoin $ view #txWithdrawal txCtx
-                , certificateDepositsReturned = depositAmounts 1 pp delegs
-                , certificateDepositsTaken = depositAmounts (-1) pp delegs
+                , rewardWithdrawals = withdrawalToCoin wdrl
+                , certificateDepositsReturned = numDeposits 1 delegs
+                , certificateDepositsTaken = numDeposits (-1) delegs
                 , utxoAvailable
                 }
     liftIO $ traceWith tr $ MsgSelectionDetail sel
@@ -1549,8 +1551,14 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
     nl = ctx ^. networkLayer
     tl = ctx ^. transactionLayer @k
     tr = contramap MsgWallet $ ctx ^. logger
-    tr' = contramap (MsgSelectAssets utxoAvailable txCtx outputs) tr
+    trSelect = contramap (MsgSelectAssets utxoAvailable txCtx outputs) tr
+
     delegs = view #txDelegationActions txCtx
+    wdrl = view #txWithdrawal txCtx
+
+    numDeposits :: Int -> [DelegationAction] -> Natural
+    numDeposits sig = sum . map (delegationActionDeposit withSign)
+        where withSign = fromIntegral . max 0 . (* (signum sig))
 
     -- Ensure that there's no existing pending withdrawals. Indeed, a withdrawal
     -- is necessarily withdrawing rewards in their totality. So, after a first
@@ -1569,16 +1577,7 @@ selectAssets ctx (utxoAvailable, cp, pending) txCtx outputs transform = do
         hasWithdrawal :: Tx -> Bool
         hasWithdrawal = not . null . withdrawals
 
--- | Total amount that should be taken from/returned back to the wallet for
--- stake key registrations/de-registrations in a transaction.
---
--- This will always be non-negative. The first parameter specifies the
--- direction.
-depositAmounts :: Int -> ProtocolParameters -> [DelegationAction] -> Coin
-depositAmounts sig pp = sumCoins . map (delegationActionDeposit makeCoin)
-  where
-    Coin deposit = stakeKeyDeposit pp
-    makeCoin = Coin . (* deposit) . fromIntegral . (* (signum sig)) . max 0
+    handleErrors = withExceptT ErrSelectAssets
 
 -- | Takes a transaction with a potentially incomplete witness set, and adds
 -- witnesses for all transaction inputs which the wallet can spend.
@@ -1687,17 +1686,20 @@ getFullTxInfo
     -> SealedTx
     -> ExceptT ErrSignPayment IO (Tx, TxMeta, UTCTime, SealedTx)
 getFullTxInfo ctx wid txCtx sel sealed = db & \DBLayer{..} -> do
-    cp <- mapExceptT atomically $
-        withExceptT ErrSignPaymentNoSuchWallet $ withNoSuchWallet wid $
-            readCheckpoint wid
-    liftIO $ do
-        (time, meta) <- mkTxMeta ti (currentTip cp) (getState cp) txCtx sel
-        pure (decodeTx tl sealed, meta, time, sealed)
+    cp <- withExceptT ErrSignPaymentNoSuchWallet $ withNoSuchWallet wid $
+        atomically $ readCheckpoint wid
+    time <- liftIO $ slotStartTime' (cp ^. #currentTip . #slotNo)
+    pp <- liftIO (currentProtocolParameters nl)
+    let meta = mkTxMeta (stakeKeyDeposit pp)
+            (currentTip cp) (getState cp) txCtx sel
+    pure (decodeTx tl sealed, meta, time, sealed)
   where
     db = ctx ^. dbLayer @IO @s @k
     tl = ctx ^. transactionLayer @k
     nl = ctx ^. networkLayer
-    ti = timeInterpreter nl
+    ti = neverFails "getFullTxInfo: pending tx slot ahead of the node tip" $
+        timeInterpreter nl
+    slotStartTime' = interpretQuery ti . slotToUTCTime
 
 -- | Construct an unsigned transaction from a given selection.
 constructTransaction
@@ -1747,54 +1749,44 @@ getTxExpiry ti maybeTTL = do
 -- amount between right here, and the Primitive.Model (see prefilterBlocks).
 mkTxMeta
     :: IsOurs s Address
-    => TimeInterpreter (ExceptT PastHorizonException IO)
+    => Coin
     -> BlockHeader
     -> s
     -> TransactionCtx
     -> SelectionResult TxOut
-    -> IO (UTCTime, TxMeta)
-mkTxMeta ti' blockHeader wState txCtx sel =
-    let
-        amtOuts = sumCoins $
-            (txOutCoin <$> changeGenerated sel)
-            ++
-            mapMaybe ourCoin (outputsCovered sel)
-
-        amtInps
-            = sumCoins (txOutCoin . snd <$> inputsSelected sel)
-            -- NOTE: In case where rewards were pulled from an external
-            -- source, they aren't added to the calculation because the
-            -- money is considered to come from outside of the wallet; which
-            -- changes the way we look at transactions (in such case, a
-            -- transaction is considered 'Incoming' since it brings extra money
-            -- to the wallet from elsewhere).
-            & case txWithdrawal txCtx of
-                w@WithdrawalSelf{} -> addCoin (withdrawalToCoin w)
-                WithdrawalExternal{} -> Prelude.id
-                NoWithdrawal -> Prelude.id
-    in do
-        t <- slotStartTime' (blockHeader ^. #slotNo)
-        return
-            ( t
-            , TxMeta
-                { status = Pending
-                , direction = if amtInps > amtOuts then Outgoing else Incoming
-                , slotNo = blockHeader ^. #slotNo
-                , blockHeight = blockHeader ^. #blockHeight
-                , amount = Coin.distance amtInps amtOuts
-                , expiry = Just (txTimeToLive txCtx)
-                }
-            )
+    -> TxMeta
+mkTxMeta _stakeAddressDeposit blockHeader wState txCtx sel = TxMeta
+    { status = Pending
+    , direction = if amtInps > amtOuts then Outgoing else Incoming
+    , slotNo = blockHeader ^. #slotNo
+    , blockHeight = blockHeader ^. #blockHeight
+    , amount = Coin.distance amtInps amtOuts
+    , expiry = Just (txTimeToLive txCtx)
+    }
   where
-    slotStartTime' = interpretQuery ti . slotToUTCTime
-      where
-        ti = neverFails "mkTxMeta slots should never be ahead of the node tip" ti'
+    amtOuts = sumCoins $ mconcat
+        [ txOutCoin <$> changeGenerated sel
+        , mapMaybe ourCoin (outputsCovered sel)
+        ]
+
+    amtInps = sumCoins $
+        wdrlInp : (txOutCoin . snd <$> F.toList (inputsSelected sel))
+
+    -- NOTE: In case where rewards were pulled from an external
+    -- source, they aren't added to the calculation because the
+    -- money is considered to come from outside of the wallet; which
+    -- changes the way we look at transactions (in such case, a
+    -- transaction is considered 'Incoming' since it brings extra money
+    -- to the wallet from elsewhere).
+    wdrlInp = case txWithdrawal txCtx of
+        w@WithdrawalSelf{} -> withdrawalToCoin w
+        WithdrawalExternal{} -> Coin 0
+        NoWithdrawal -> Coin 0
 
     ourCoin :: TxOut -> Maybe Coin
-    ourCoin (TxOut addr tokens) =
-        case fst (isOurs addr wState) of
-            Just{}  -> Just (TokenBundle.getCoin tokens)
-            Nothing -> Nothing
+    ourCoin (TxOut addr tokens) = case fst (isOurs addr wState) of
+        Just _  -> Just (TokenBundle.getCoin tokens)
+        Nothing -> Nothing
 
 -- | Broadcast a (signed) transaction to the network.
 submitTx
@@ -2162,7 +2154,7 @@ joinStakePool ctx currentEpoch knownPools pid poolStatus wid =
             maybeRegisterStakeKey @ctx @s @k ctx wid
 
         let mRetirementEpoch = view #retirementEpoch <$>
-                W.getPoolRetirementCertificate poolStatus
+                getPoolRetirementCertificate poolStatus
         let retirementInfo =
                 PoolRetirementEpochInfo currentEpoch <$> mRetirementEpoch
 
@@ -2253,9 +2245,31 @@ calcMinimumDeposit
     => ctx
     -> WalletId
     -> ExceptT ErrNoSuchWallet IO Coin
-calcMinimumDeposit ctx wid = depositAmounts (-1)
+calcMinimumDeposit ctx wid = depositAmountsPP (-1)
     <$> liftIO (currentProtocolParameters (ctx ^. networkLayer))
     <*> maybeRegisterStakeKey @ctx @s @k ctx wid
+
+-- | Shortcut for 'depositAmounts' which takes the full 'ProtocolParameters'
+-- record.
+depositAmountsPP :: Int -> ProtocolParameters -> [DelegationAction] -> Coin
+depositAmountsPP sig pp = depositAmounts sig (stakeKeyDeposit pp)
+
+-- | Total amount that should be taken from/returned back to the wallet for
+-- stake key registrations/de-registrations in a transaction.
+--
+-- This will always be non-negative. The first parameter specifies the
+-- direction.
+depositAmounts
+    :: Int
+    -- ^ Direction: negative means deposit is taken from the wallet.
+    -> Coin
+    -- ^ The deposit required to register a stake address.
+    -> [DelegationAction]
+    -- ^ A delegation certificates from a transaction
+    -> Coin
+depositAmounts sig (Coin d) = sumCoins . map (delegationActionDeposit makeCoin)
+  where
+    makeCoin = Coin . (* d) . fromIntegral . max 0 . (* (signum sig))
 
 -- | Estimate the transaction fee for a given coin selection algorithm by
 -- repeatedly running it (100 times) and collecting the results. In the returned
@@ -2305,8 +2319,8 @@ estimateFee
     -- enough in the wallet to cover for these fees.
     handleCannotCover :: ErrSelectAssets -> ExceptT ErrSelectAssets m Coin
     handleCannotCover = \case
-        e@(ErrSelectAssetsSelectionError se) -> case se of
-            SelectionBalanceError (Balance.UnableToConstructChange ce) ->
+        e@(ErrSelectAssets se) -> case se of
+            ErrWalletSelectionBalance (UnableToConstructChange ce) ->
                 case ce of
                     UnableToConstructChangeError {requiredCost} ->
                         pure requiredCost
@@ -2753,10 +2767,9 @@ data ErrCreateMigrationPlan
     deriving (Generic, Eq, Show)
 
 data ErrSelectAssets
-    = ErrSelectAssetsPrepareOutputsError ErrPrepareOutputs
+    = ErrSelectAssets ErrWalletSelection
     | ErrSelectAssetsNoSuchWallet ErrNoSuchWallet
     | ErrSelectAssetsAlreadyWithdrawing Tx
-    | ErrSelectAssetsSelectionError SelectionError
     deriving (Generic, Eq, Show)
 
 data ErrStakePoolDelegation

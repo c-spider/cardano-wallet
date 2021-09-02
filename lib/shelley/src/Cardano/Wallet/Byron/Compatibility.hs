@@ -211,6 +211,8 @@ genesisBlockFromTxOuts gp outs = W.Block
         , resolvedInputs = []
         , outputs = [out]
         , withdrawals = mempty
+        , delegationCerts = []
+        , poolCerts = []
         , metadata = Nothing
         }
 
@@ -274,6 +276,12 @@ fromTxAux txAux = case taTx txAux of
 
         , withdrawals =
             mempty
+
+        , delegationCerts =
+            []
+
+        , poolCerts =
+            []
 
         , metadata =
             Nothing

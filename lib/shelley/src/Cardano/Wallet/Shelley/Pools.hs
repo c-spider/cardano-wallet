@@ -75,10 +75,16 @@ import Cardano.Wallet.Primitive.Slotting
 import Cardano.Wallet.Primitive.Types
     ( ActiveSlotCoefficient (..)
     , BlockHeader (..)
-    , CertificatePublicationTime (..)
     , EpochNo (..)
     , GenesisParameters (..)
     , NetworkParameters (..)
+    , SlotLength (..)
+    , SlottingParameters (..)
+    )
+import Cardano.Wallet.Primitive.Types.Coin
+    ( Coin (..) )
+import Cardano.Wallet.Primitive.Types.StakePools
+    ( CertificatePublicationTime (..)
     , PoolCertificate (..)
     , PoolId
     , PoolLifeCycleStatus (..)
@@ -87,8 +93,6 @@ import Cardano.Wallet.Primitive.Types
     , PoolRegistrationCertificate (..)
     , PoolRetirementCertificate (..)
     , Settings (..)
-    , SlotLength (..)
-    , SlottingParameters (..)
     , StakePoolMetadata
     , StakePoolMetadataHash
     , StakePoolsSummary (..)
@@ -96,8 +100,6 @@ import Cardano.Wallet.Primitive.Types
     , getPoolRetirementCertificate
     , unSmashServer
     )
-import Cardano.Wallet.Primitive.Types.Coin
-    ( Coin (..) )
 import Cardano.Wallet.Registry
     ( AfterThreadLog, traceAfterThread )
 import Cardano.Wallet.Shelley.Compatibility

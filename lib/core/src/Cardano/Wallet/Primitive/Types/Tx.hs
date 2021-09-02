@@ -97,7 +97,9 @@ import Cardano.Wallet.Primitive.Types.Coin
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash (..) )
 import Cardano.Wallet.Primitive.Types.RewardAccount
-    ( RewardAccount (..) )
+    ( DelegationCertificate, RewardAccount (..) )
+import Cardano.Wallet.Primitive.Types.StakePools
+    ( PoolCertificate )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -214,6 +216,12 @@ data Tx = Tx
         :: !(Map RewardAccount Coin)
         -- ^ Withdrawals (of funds from a registered reward account) embedded in
         -- a transaction. The order does not matter.
+
+    , delegationCerts
+        :: ![DelegationCertificate]
+
+    , poolCerts
+        :: ![PoolCertificate]
 
     , metadata
         :: !(Maybe TxMetadata)
@@ -619,6 +627,8 @@ fromTransactionInfo info = Tx
     , outputs = txInfoOutputs info
     , withdrawals = txInfoWithdrawals info
     , metadata = txInfoMetadata info
+    , delegationCerts = [] -- fixme: missing delegation certificates
+    , poolCerts = [] -- fixme: missing certificates
     }
   where
     drop3rd :: (a, b, c) -> (a, b)

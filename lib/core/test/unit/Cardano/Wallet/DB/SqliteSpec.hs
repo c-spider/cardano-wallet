@@ -569,6 +569,8 @@ fileModeSpec =  do
                             , outputs =
                                 [TxOut (fst $ head ourAddrs) (coinToBundle 4)]
                             , withdrawals = mempty
+                            , delegationCerts = mempty
+                            , poolCerts = mempty
                             , metadata = Nothing
                             }
                         ]
@@ -590,6 +592,8 @@ fileModeSpec =  do
                             , TxOut (fst $ ourAddrs !! 1) (coinToBundle 2)
                             ]
                         , withdrawals = mempty
+                        , delegationCerts = mempty
+                        , poolCerts = mempty
                         , metadata = Nothing
                         }
                     ]
@@ -1201,6 +1205,8 @@ testTxs = [(tx, txMeta)]
         , resolvedInputs = [(TxIn (mockHash @String "tx1") 0, Coin 1)]
         , outputs = [TxOut (Address "addr") (coinToBundle 1)]
         , withdrawals = mempty
+        , delegationCerts = mempty
+        , poolCerts = mempty
         , metadata = Nothing
         }
     txMeta = TxMeta

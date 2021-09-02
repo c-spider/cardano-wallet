@@ -356,7 +356,7 @@ import Cardano.Wallet.Primitive.CoinSelection
     ( ErrOutputTokenBundleSizeExceedsLimit (..)
     , ErrOutputTokenQuantityExceedsLimit (..)
     , ErrPrepareOutputs (..)
-    , SelectionError (..)
+    , ErrWalletSelection (..)
     )
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionResult (..)
@@ -401,7 +401,6 @@ import Cardano.Wallet.Primitive.Types
     , NetworkParameters (..)
     , PassphraseScheme (..)
     , PoolId
-    , PoolLifeCycleStatus (..)
     , Signature (..)
     , SlotId
     , SlotNo
@@ -415,6 +414,8 @@ import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..), coinQuantity )
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash (..) )
+import Cardano.Wallet.Primitive.Types.StakePools
+    ( PoolLifeCycleStatus (..) )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( Flat (..), TokenBundle (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -2280,9 +2281,7 @@ quitStakePool ctx (ApiT wid) body = do
 
         pure (sel, tx, txMeta, txTime)
 
-    liftIO $ mkApiTransaction
-        (timeInterpreter (ctx ^. networkLayer))
-        (#pendingSince)
+    liftIO $ mkApiTransaction ti #pendingSince
         MkApiTransactionParams
             { txId = tx ^. #txId
             , txFee = tx ^. #fee
@@ -2944,7 +2943,7 @@ mkApiTransaction timeInterpreter setTimeReference tx = do
         , pendingSince = Nothing
         , expiresAt = Nothing
         , depth = Nothing
-        , direction = ApiT (tx ^. (#txMeta . #direction))
+        , direction = ApiT (tx ^. #txMeta . #direction)
         , inputs =
             [ ApiTxInput (fmap toAddressAmount o) (ApiT i)
             | (i, o) <- tx ^. #txInputs
@@ -2969,7 +2968,7 @@ mkApiTransaction timeInterpreter setTimeReference tx = do
         -- greater or equal to totalOut; any remainder is actually a
         -- deposit. Said differently, if totalIn > 0, then necessarily 'fee' on
         -- metadata should be 'Just{}'
-        | tx ^. (#txMeta . #direction) == W.Outgoing =
+        | tx ^. #txMeta . #direction == W.Outgoing =
             if totalIn < totalOut
             then 0 -- This should not be possible in practice. See FIXME below.
             else totalIn - totalOut
@@ -3776,7 +3775,6 @@ instance IsServerError ErrCreateMigrationPlan where
 
 instance IsServerError ErrSelectAssets where
     toServerError = \case
-        ErrSelectAssetsPrepareOutputsError e -> toServerError e
         ErrSelectAssetsNoSuchWallet e -> toServerError e
         ErrSelectAssetsAlreadyWithdrawing tx ->
             apiError err403 AlreadyWithdrawing $ mconcat
@@ -3788,7 +3786,7 @@ instance IsServerError ErrSelectAssets where
                 , "transaction; if, for some reason, you really want a new "
                 , "transaction, then cancel the previous one first."
                 ]
-        ErrSelectAssetsSelectionError (SelectionBalanceError selectionError) ->
+        ErrSelectAssets (ErrWalletSelectionBalance selectionError) ->
             case selectionError of
                 Balance.BalanceInsufficient e ->
                     apiError err403 NotEnoughMoney $ mconcat
@@ -3831,7 +3829,7 @@ instance IsServerError ErrSelectAssets where
                         , "ada to proceed. Try increasing your wallet balance"
                         , "or sending a smaller amount."
                         ]
-        ErrSelectAssetsSelectionError (SelectionOutputsError selectionError) ->
+        ErrSelectAssets (ErrWalletSelectionOutputs selectionError) ->
             toServerError selectionError
 
 instance IsServerError (ErrInvalidDerivationIndex 'Hardened level) where

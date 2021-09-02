@@ -130,8 +130,9 @@ data TransactionLayer k tx = TransactionLayer
         -> SelectionSkeleton
             -- An intermediate representation of an ongoing selection
         -> Coin
-        -- ^ Compute a minimal fee amount necessary to pay for a given selection
-        -- This also includes necessary deposits.
+        -- ^ Compute a minimal transaction fee amount necessary to pay for a
+        -- given selection. This amount does not include certificate deposits -
+        -- they are calculated separately.
 
     , computeSelectionLimit
         :: ProtocolParameters

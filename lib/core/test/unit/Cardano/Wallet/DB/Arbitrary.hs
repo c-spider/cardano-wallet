@@ -83,7 +83,6 @@ import Cardano.Wallet.Primitive.Types
     ( Block (..)
     , BlockHeader (..)
     , DecentralizationLevel (..)
-    , DelegationCertificate (..)
     , EpochNo (..)
     , EraInfo (..)
     , FeePolicy (..)
@@ -92,7 +91,6 @@ import Cardano.Wallet.Primitive.Types
     , PoolId (..)
     , ProtocolParameters (..)
     , Range (..)
-    , ShowFmt (..)
     , SlotInEpoch (..)
     , SlotNo (..)
     , SortOrder (..)
@@ -116,7 +114,7 @@ import Cardano.Wallet.Primitive.Types.Coin.Gen
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash (..), mockHash )
 import Cardano.Wallet.Primitive.Types.RewardAccount
-    ( RewardAccount (..) )
+    ( DelegationCertificate (..), RewardAccount (..) )
 import Cardano.Wallet.Primitive.Types.TokenBundle.Gen
     ( genTokenBundleSmallRange )
 import Cardano.Wallet.Primitive.Types.Tx
@@ -133,6 +131,8 @@ import Cardano.Wallet.Primitive.Types.UTxO
     ( UTxO (..) )
 import Cardano.Wallet.Unsafe
     ( someDummyMnemonic, unsafeMkPercentage )
+import Cardano.Wallet.Util
+    ( ShowFmt (..) )
 import Control.Arrow
     ( second )
 import Control.DeepSeq
@@ -376,10 +376,10 @@ arbitraryChainLength = 10
 -------------------------------------------------------------------------------}
 
 instance Arbitrary Tx where
-    shrink (Tx _tid fees ins cins outs wdrls md) =
-        [ mkTx fees ins' cins' outs' wdrls' md'
-        | (ins', cins', outs', wdrls', md') <-
-            shrink (ins, cins, outs, wdrls, md)
+    shrink (Tx _tid fees ins cins outs wdrls delegs _ md) =
+        [ mkTx fees ins' cins' outs' wdrls' delegs' md'
+        | (ins', cins', outs', wdrls', delegs', md') <-
+            shrink (ins, cins, outs, wdrls, delegs, md)
         ]
 
     arbitrary = do
@@ -388,7 +388,7 @@ instance Arbitrary Tx where
         outs <- fmap (L.take 5 . getNonEmpty) arbitrary
         wdrls <- fmap (Map.fromList . L.take 5) arbitrary
         fees <- arbitrary
-        mkTx fees ins cins outs wdrls <$> arbitrary
+        mkTx fees ins cins outs wdrls [] <$> arbitrary
 
 instance Arbitrary TxIn where
     arbitrary = TxIn

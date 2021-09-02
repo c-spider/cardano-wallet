@@ -44,10 +44,8 @@ import Cardano.Wallet.Primitive.Types
     ( Block (..)
     , BlockHeader (..)
     , EpochLength (..)
-    , ShowFmt (..)
     , SlotId (..)
     , SlotNo (..)
-    , invariant
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
@@ -76,6 +74,8 @@ import Cardano.Wallet.Primitive.Types.UTxO
     ( Dom (..), UTxO (..), balance, excluding, restrictedTo )
 import Cardano.Wallet.Primitive.Types.UTxO.Gen
     ( genUTxO, shrinkUTxO )
+import Cardano.Wallet.Util
+    ( ShowFmt (..), invariant )
 import Control.DeepSeq
     ( NFData (..) )
 import Control.Monad
@@ -832,6 +832,8 @@ instance Arbitrary (WithPending WalletState) where
                         , resolvedCollateral = []
                         , outputs = [out {tokens}]
                         , withdrawals = mempty
+                        , delegationCerts = []
+                        , poolCerts = []
                         , metadata = Nothing
                         }
 
@@ -907,6 +909,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -941,6 +945,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             , Tx
@@ -964,6 +970,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -998,6 +1006,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             , Tx
@@ -1021,6 +1031,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1055,6 +1067,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1099,6 +1113,8 @@ blockchain =
                       }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1132,6 +1148,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1166,6 +1184,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1214,6 +1234,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1288,6 +1310,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             , Tx
@@ -1311,6 +1335,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1345,6 +1371,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             , Tx
@@ -1368,6 +1396,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1462,6 +1492,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
               , Tx
@@ -1485,6 +1517,8 @@ blockchain =
                           }
                       ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]
@@ -1519,6 +1553,8 @@ blockchain =
                         }
                     ]
                 , withdrawals = mempty
+                , delegationCerts = []
+                , poolCerts = []
                 , metadata = Nothing
                 }
             ]

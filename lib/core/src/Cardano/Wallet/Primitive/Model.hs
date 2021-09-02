@@ -56,17 +56,13 @@ import Prelude
 import Cardano.Wallet.Primitive.AddressDiscovery
     ( IsOurs (..) )
 import Cardano.Wallet.Primitive.Types
-    ( Block (..)
-    , BlockHeader (..)
-    , DelegationCertificate (..)
-    , dlgCertAccount
-    )
+    ( Block (..), BlockHeader (..) )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..), distance, sumCoins )
 import Cardano.Wallet.Primitive.Types.RewardAccount
-    ( RewardAccount (..) )
+    ( DelegationCertificate (..), RewardAccount (..), dlgCertAccount )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.Tx
@@ -418,6 +414,9 @@ prefilterBlock b u0 = runState $ do
         let hasKnownOutput = ourU /= mempty
         let hasKnownWithdrawal = ourWithdrawals /= mempty
 
+        ourDelegations <- mapMaybeM ourDelegation (tx ^. #delegationCerts)
+        let tx' = tx { delegationCerts = ourDelegations }
+
         -- NOTE 1: The only case where fees can be 'Nothing' is when dealing with
         -- a Byron transaction. In which case fees can actually be calculated as
         -- the delta between inputs and outputs.
@@ -442,7 +441,7 @@ prefilterBlock b u0 = runState $ do
 
         return $ if hasKnownOutput && not hasKnownInput then
             let dir = Incoming in
-            ( (tx { fee = actualFee dir }, mkTxMeta (TB.getCoin received) dir) : txs
+            ( (tx' { fee = actualFee dir }, mkTxMeta (TB.getCoin received) dir) : txs
             , u'
             )
         else if hasKnownInput || hasKnownWithdrawal then
@@ -452,7 +451,7 @@ prefilterBlock b u0 = runState $ do
                 dir = if adaSpent > adaReceived then Outgoing else Incoming
                 amount = distance adaSpent adaReceived
             in
-                ( (tx { fee = actualFee dir }, mkTxMeta amount dir) : txs
+                ( (tx' { fee = actualFee dir }, mkTxMeta amount dir) : txs
                 , u'
                 )
         else

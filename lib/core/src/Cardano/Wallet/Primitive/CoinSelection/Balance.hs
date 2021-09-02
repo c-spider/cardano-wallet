@@ -487,7 +487,7 @@ performSelection
     -> SelectionCriteria
         -- ^ The selection goal to satisfy.
     -> m (Either SelectionError (SelectionResult TokenBundle))
-performSelection minCoinFor costFor bundleSizeAssessor criteria
+performSelection minCoinFor costFor bundleSizeAssessor SelectionCriteria{..}
     -- Is the minted value all spent or burnt?
     | not (assetsToMint `leq` (assetsToBurn <> requestedOutputAssets)) =
         pure $ Left $ OutputsInsufficient $ OutputsInsufficientError
@@ -515,15 +515,6 @@ performSelection minCoinFor costFor bundleSizeAssessor criteria
                 , balanceRequired
                 }
   where
-    SelectionCriteria
-        { outputsToCover
-        , utxoAvailable
-        , selectionLimit
-        , extraCoinSource
-        , assetsToMint
-        , assetsToBurn
-        } = criteria
-
     requestedOutputs = F.foldMap (view #tokens) outputsToCover
     requestedOutputAssets = view #tokens requestedOutputs
 
@@ -1098,7 +1089,7 @@ makeChange
         -- ^ Criteria for making change.
     -> Either UnableToConstructChangeError [TokenBundle]
         -- ^ Generated change bundles.
-makeChange criteria
+makeChange MakeChangeCriteria{..}
     | not (totalOutputValue `leq` totalInputValue) =
         totalInputValueInsufficient
     | TokenBundle.getCoin totalOutputValue == Coin 0 =
@@ -1109,17 +1100,6 @@ makeChange criteria
             assignCoinsToChangeMaps
                 adaAvailable minCoinFor changeMapOutputCoinPairs
   where
-    MakeChangeCriteria
-        { minCoinFor
-        , bundleSizeAssessor
-        , requiredCost
-        , extraCoinSource
-        , inputBundles
-        , outputBundles
-        , assetsToMint
-        , assetsToBurn
-        } = criteria
-
     -- The following subtraction is safe, as we have already checked
     -- that the total input value is greater than the total output
     -- value:

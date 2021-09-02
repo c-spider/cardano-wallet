@@ -9,7 +9,8 @@
 -- Copyright: © 2021 IOHK
 -- License: Apache-2.0
 --
--- This module provides a high-level interface for coin selection.
+-- This module provides a high-level interface for coin selection in a Cardano
+-- wallet.
 --
 -- It handles the following responsibilities:
 --
@@ -21,12 +22,12 @@
 -- Use the 'performSelection' function to perform a coin selection.
 --
 module Cardano.Wallet.Primitive.CoinSelection
-    ( performSelection
+    ( runWalletCoinSelection
     , SelectionConstraints (..)
     , SelectionParams (..)
-    , SelectionError (..)
 
     , prepareOutputs
+    , ErrWalletSelection (..)
     , ErrPrepareOutputs (..)
     , ErrOutputTokenBundleSizeExceedsLimit (..)
     , ErrOutputTokenQuantityExceedsLimit (..)
@@ -36,14 +37,17 @@ import Prelude
 
 import Cardano.Wallet.Primitive.CoinSelection.Balance
     ( SelectionCriteria (..)
+    , SelectionError
     , SelectionLimit
     , SelectionResult
     , SelectionSkeleton
+    , performSelection
+    , prepareOutputsWith
     )
 import Cardano.Wallet.Primitive.Types.Address
     ( Address )
 import Cardano.Wallet.Primitive.Types.Coin
-    ( Coin, addCoin )
+    ( Coin (..), addCoin )
 import Cardano.Wallet.Primitive.Types.TokenBundle
     ( TokenBundle )
 import Cardano.Wallet.Primitive.Types.TokenMap
@@ -60,8 +64,8 @@ import Cardano.Wallet.Primitive.Types.UTxOIndex
     ( UTxOIndex )
 import Control.Monad.Random.Class
     ( MonadRandom )
-import Data.Bifunctor
-    ( first )
+import Control.Monad.Trans.Except
+    ( ExceptT (..), withExceptT )
 import Data.Generics.Internal.VL.Lens
     ( view )
 import Data.Generics.Labels
@@ -74,8 +78,9 @@ import GHC.Generics
     ( Generic )
 import GHC.Stack
     ( HasCallStack )
+import Numeric.Natural
+    ( Natural )
 
-import qualified Cardano.Wallet.Primitive.CoinSelection.Balance as Balance
 import qualified Cardano.Wallet.Primitive.Types.TokenBundle as TokenBundle
 import qualified Cardano.Wallet.Primitive.Types.TokenMap as TokenMap
 import qualified Data.Foldable as F
@@ -90,35 +95,39 @@ import qualified Data.Set as Set
 --  - producing change outputs to return excess value to the wallet;
 --  - balancing a selection to pay for the transaction fee.
 --
-performSelection
+runWalletCoinSelection
     :: (HasCallStack, MonadRandom m)
     => SelectionConstraints
     -> SelectionParams
-    -> m (Either SelectionError (SelectionResult TokenBundle))
-performSelection SelectionConstraints{..} SelectionParams{..} =
-    -- TODO:
+    -> ExceptT ErrWalletSelection m (SelectionResult TokenBundle)
+runWalletCoinSelection SelectionConstraints{..} SelectionParams{..} = do
+    -- TODO: [ADP-1037] Adjust coin selection and fee estimation to handle
+    -- collateral inputs.
     --
-    -- https://jira.iohk.io/browse/ADP-1037
-    -- Adjust coin selection and fee estimation to handle collateral inputs
-    --
-    -- https://jira.iohk.io/browse/ADP-1070
-    -- Adjust coin selection and fee estimation to handle pre-existing inputs
-    --
-    case prepareOutputs SelectionConstraints{..} outputsToCover of
-        Left e ->
-            pure $ Left $ SelectionOutputsError e
-        Right preparedOutputsToCover ->
-            first SelectionBalanceError <$> Balance.performSelection
-                computeMinimumAdaQuantity
-                computeMinimumCost
-                assessTokenBundleSize
-                SelectionCriteria
-                    { outputsToCover = preparedOutputsToCover
-                    , selectionLimit =
-                        computeSelectionLimit $ F.toList preparedOutputsToCover
-                    , extraCoinSource = Just $
-                        addCoin rewardWithdrawals certificateDepositsReturned
-                    , .. }
+    -- TODO: [ADP-1070] Adjust coin selection and fee estimation to handle
+    -- pre-existing inputs.
+    preparedOutputsToCover <- withExceptT ErrWalletSelectionOutputs $ ExceptT $
+        pure $ prepareOutputs SelectionConstraints{..} outputsToCover
+    withExceptT ErrWalletSelectionBalance $ ExceptT $ performSelection
+        computeMinimumAdaQuantity
+        computeMinimumCostWithDeposits
+        assessTokenBundleSize
+        SelectionCriteria
+            { outputsToCover = preparedOutputsToCover
+            , selectionLimit =
+                computeSelectionLimit $ F.toList preparedOutputsToCover
+            , extraCoinSource = Just $ rewardWithdrawals
+                `plusDeposits` certificateDepositsReturned
+            , .. }
+  where
+    plusDeposits :: Coin -> Natural -> Coin
+    plusDeposits amt n = amt `addCoin` scale n depositAmount
+
+    scale :: Natural -> Coin -> Coin
+    scale s (Coin a) = Coin (fromIntegral s * a)
+
+    computeMinimumCostWithDeposits tx = computeMinimumCost tx
+        `plusDeposits` certificateDepositsTaken
 
 -- | Specifies all constraints required for coin selection.
 --
@@ -152,6 +161,10 @@ data SelectionConstraints = SelectionConstraints
         :: Word16
         -- ^ Specifies an inclusive upper bound on the number of unique inputs
         -- that can be selected as collateral.
+    , depositAmount
+        :: Coin
+        -- ^ Amount that should be taken from/returned back to the wallet for
+        -- each stake key registration/de-registration in the transaction.
     }
 
 -- | Specifies all parameters that are specific to a given selection.
@@ -167,11 +180,11 @@ data SelectionParams = SelectionParams
         :: !Coin
         -- ^ Specifies the value of a withdrawal from a reward account.
     , certificateDepositsTaken
-        :: !Coin
-        -- ^ Amount of ada lodged in stake key registration deposits.
+        :: !Natural
+        -- ^ Number of deposits for stake key registrations.
     , certificateDepositsReturned
-        :: !Coin
-        -- ^ Amount of ada lodged in stake key registration deposits.
+        :: !Natural
+        -- ^ Number of deposits from stake key de-registrations.
     , outputsToCover
         :: !(NonEmpty TxOut)
         -- ^ Specifies a set of outputs that must be paid for.
@@ -183,11 +196,11 @@ data SelectionParams = SelectionParams
     }
     deriving (Eq, Generic, Show)
 
--- | Indicates that an error occurred while performing a coin selection.
---
-data SelectionError
-    = SelectionBalanceError Balance.SelectionError
-    | SelectionOutputsError ErrPrepareOutputs
+-- | Indicates that coin selection failed, or a precondition to coin selection
+-- failed.
+data ErrWalletSelection
+    = ErrWalletSelectionBalance SelectionError
+    | ErrWalletSelectionOutputs ErrPrepareOutputs
     deriving (Eq, Show)
 
 -- | Prepares the given user-specified outputs, ensuring that they are valid.
@@ -254,7 +267,7 @@ prepareOutputs constraints outputsUnprepared
         ]
 
     outputsToCover =
-        Balance.prepareOutputsWith computeMinimumAdaQuantity outputsUnprepared
+        prepareOutputsWith computeMinimumAdaQuantity outputsUnprepared
 
 -- | Indicates a problem when preparing outputs for a coin selection.
 --

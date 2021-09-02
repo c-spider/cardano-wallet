@@ -94,8 +94,7 @@ data TxWithoutId = TxWithoutId
     , outputs :: ![TxOut]
     , metadata :: !(Maybe TxMetadata)
     , withdrawals :: !(Map RewardAccount Coin)
-    }
-    deriving (Eq, Ord, Show)
+    } deriving (Eq, Ord, Show)
 
 genTxWithoutId :: Gen TxWithoutId
 genTxWithoutId = TxWithoutId
@@ -117,7 +116,11 @@ shrinkTxWithoutId =
         (shrinkMapWith shrinkRewardAccount shrinkCoinPositive)
 
 txWithoutIdToTx :: TxWithoutId -> Tx
-txWithoutIdToTx tx@TxWithoutId {..} = Tx {txId = mockHash tx, ..}
+txWithoutIdToTx tx@TxWithoutId {..} = Tx
+    { txId = mockHash tx
+    , delegationCerts = []
+    , poolCerts = []
+    , .. }
 
 txToTxWithoutId :: Tx -> TxWithoutId
 txToTxWithoutId Tx {..} = TxWithoutId {..}
