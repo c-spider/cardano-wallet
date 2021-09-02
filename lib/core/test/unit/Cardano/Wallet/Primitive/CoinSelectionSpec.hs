@@ -91,8 +91,6 @@ spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
         it "prop_accountForExistingInputs_utxoAvailable" $
             property prop_accountForExistingInputs_utxoAvailable
 
-type ComputeMinimumCost = SelectionSkeleton -> Coin
-
 prop_accountForExistingInputs_computeMinimumCost
     :: UTxO -> SelectionSkeleton -> Property
 prop_accountForExistingInputs_computeMinimumCost existingInputs skeleton =
@@ -106,10 +104,10 @@ prop_accountForExistingInputs_computeMinimumCost existingInputs skeleton =
             (skeleton & over #skeletonInputCount (+ UTxO.size existingInputs))
         ]
   where
-    computeMinimumCost :: ComputeMinimumCost
+    computeMinimumCost :: SelectionSkeleton -> Coin
     computeMinimumCost = Coin . fromIntegral . length . show
 
-    computeMinimumCost' :: ComputeMinimumCost
+    computeMinimumCost' :: SelectionSkeleton -> Coin
     computeMinimumCost' = getReport $ accountForExistingInputs
         (const . Report . view #computeMinimumCost)
         emptySelectionConstraints {computeMinimumCost}
