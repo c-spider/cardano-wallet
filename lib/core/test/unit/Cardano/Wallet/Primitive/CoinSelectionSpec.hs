@@ -32,9 +32,13 @@ import Cardano.Wallet.Primitive.CoinSelection.Gen
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..) )
 import Cardano.Wallet.Primitive.Types.TokenMap
-    ( AssetId )
+    ( AssetId, TokenMap )
 import Cardano.Wallet.Primitive.Types.TokenMap.Gen
-    ( genAssetId, shrinkAssetId )
+    ( genAssetId
+    , genTokenMapSmallRange
+    , shrinkAssetId
+    , shrinkTokenMapSmallRange
+    )
 import Cardano.Wallet.Primitive.Types.Tx
     ( TxIn, TxOut )
 import Cardano.Wallet.Primitive.Types.Tx.Gen
@@ -67,10 +71,12 @@ import Test.QuickCheck
     , cover
     , genericShrink
     , property
+    , (===)
     )
 import Test.QuickCheck.Extra
     ( NotNull (..) )
 
+import qualified Cardano.Wallet.Primitive.Types.TokenMap as TokenMap
 import qualified Cardano.Wallet.Primitive.Types.UTxO as UTxO
 import qualified Cardano.Wallet.Primitive.Types.UTxOIndex as UTxOIndex
 import qualified Data.Foldable as F
@@ -82,14 +88,32 @@ spec :: Spec
 spec = describe "Cardano.Wallet.Primitive.CoinSelectionSpec" $
 
     describe "accountForExistingInputs" $ do
+        it "prop_accountForExistingInputs_assetsToMint" $
+            property prop_accountForExistingInputs_assetsToMint
         it "prop_accountForExistingInputs_computeMinimumCost" $
             property prop_accountForExistingInputs_computeMinimumCost
         it "prop_accountForExistingInputs_computeSelectionLimit" $
             property prop_accountForExistingInputs_computeSelectionLimit
+        it "prop_accountForExistingInputs_existingInputs" $
+            property prop_accountForExistingInputs_existingInputs
         it "prop_accountForExistingInputs_inputsSelected" $
             property prop_accountForExistingInputs_inputsSelected
         it "prop_accountForExistingInputs_utxoAvailable" $
             property prop_accountForExistingInputs_utxoAvailable
+
+prop_accountForExistingInputs_assetsToMint :: UTxO -> TokenMap -> Property
+prop_accountForExistingInputs_assetsToMint existingInputs assetsToMint =
+    checkCoverage $
+    cover 10
+        (assetsToMint /= TokenMap.empty)
+        "assetsToMint /= TokenMap.empty" $
+    assetsToMint' === assetsToMint <> view #tokens (UTxO.balance existingInputs)
+  where
+    assetsToMint' :: TokenMap
+    assetsToMint' = getReport $ accountForExistingInputs
+        (const (Report . view #assetsToMint))
+        emptySelectionConstraints
+        emptySelectionParams {assetsToMint, existingInputs}
 
 prop_accountForExistingInputs_computeMinimumCost
     :: UTxO -> SelectionSkeleton -> Property
@@ -141,6 +165,23 @@ prop_accountForExistingInputs_computeSelectionLimit existingInputs txOuts =
         (const . Report . view #computeSelectionLimit)
         emptySelectionConstraints {computeSelectionLimit}
         emptySelectionParams {existingInputs}
+
+prop_accountForExistingInputs_existingInputs :: UTxO -> Property
+prop_accountForExistingInputs_existingInputs existingInputs =
+    checkCoverage $
+    cover 10
+        (existingInputs /= UTxO.empty)
+        "existingInputs /= UTxO.empty" $
+    existingInputs' === UTxO.empty
+  where
+    existingInputs' :: UTxO
+    existingInputs' = getReport $ accountForExistingInputs
+        performSelectionFn
+        emptySelectionConstraints
+        emptySelectionParams {existingInputs}
+      where
+        performSelectionFn :: PerformSelection (Report UTxO) ()
+        performSelectionFn _ params = Report $ view #existingInputs params
 
 prop_accountForExistingInputs_inputsSelected
     :: UTxO -> NotNull UTxO -> Property
@@ -270,6 +311,10 @@ instance Arbitrary SelectionLimit where
 instance Arbitrary SelectionSkeleton where
     arbitrary = genSelectionSkeleton
     shrink = shrinkSelectionSkeleton
+
+instance Arbitrary TokenMap where
+    arbitrary = genTokenMapSmallRange
+    shrink = shrinkTokenMapSmallRange
 
 instance Arbitrary TxIn where
     arbitrary = genTxIn
